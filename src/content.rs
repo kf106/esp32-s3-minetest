@@ -17,6 +17,7 @@ use crate::beds;
 use crate::bones;
 use crate::doors;
 use crate::fire;
+use crate::insects;
 use crate::tnt;
 use crate::dungeons;
 use crate::colours;
@@ -157,6 +158,13 @@ pub enum Kind {
     /// A bottle or glass (vessels): plantlike, walked through, standing on
     /// the node below.
     Vessel,
+    /// A butterfly or firefly (insects.rs): a small animated picture
+    /// (plantlike) swaying in the air, walked through, built over, washed
+    /// away, and pointed at only with a bug net.
+    Bug,
+    /// A hidden butterfly or firefly: invisible (airlike), not pointed at
+    /// nor dug, washed away.
+    BugHidden,
 }
 
 pub const CONTENT_STONE: u16 = 0;
@@ -416,6 +424,8 @@ pub const TOOL_SWORD_DIAMOND: u16 = 0x201A;
 pub const TOOL_SCREWDRIVER: u16 = 0x201B;
 /// The fire mod's flint and steel.
 pub const TOOL_FLINT_AND_STEEL: u16 = 0x201C;
+/// The fireflies mod's bug net.
+pub const TOOL_BUG_NET: u16 = 0x201D;
 /// Light given off by a torch (minetest_game: LIGHT_MAX - 1 = 13; 12 is
 /// slightly gentler and keeps the lit area, and the work, smaller).
 pub const TORCH_LIGHT: u8 = 12;
@@ -487,6 +497,21 @@ macro_rules! seed {
 /// Content IDs 125, 126 and 127 are reserved for unknown, air and ignore.
 /// Listed in id order, without gaps except those three, so that an id
 /// finds its node at once.
+/// An insect node (insects.rs): it drops itself, and is caught only with a
+/// bug net (group catchable).
+macro_rules! bug {
+    ($id:expr, $name:expr, $desc:expr, $tile:expr) => {
+        Node { id: $id, name: $name, description: $desc, tiles: [$tile; 6], groups: &[("catchable", 1)], drop: $id, drop_count: 1, kind: Kind::Bug }
+    };
+}
+
+/// A hidden insect: dropping nothing, not in the creative inventory.
+macro_rules! hidden_bug {
+    ($id:expr, $name:expr) => {
+        Node { id: $id, name: $name, description: "", tiles: [""; 6], groups: &[("not_in_creative_inventory", 1)], drop: 0, drop_count: 0, kind: Kind::BugHidden }
+    };
+}
+
 pub const NODES: &[Node] = &[
     Node {
         id: CONTENT_STONE,
@@ -3169,6 +3194,27 @@ pub const NODES: &[Node] = &[
         drop_count: 0,
         kind: Kind::Solid,
     },
+    // The butterflies and fireflies mods' insects (insects.rs; pictures
+    // CC BY-SA 3.0, see media/LICENSE-butterflies.txt and
+    // LICENSE-fireflies.txt).
+    bug!(insects::BUTTERFLY_WHITE, "esp:butterfly_white", "White Butterfly", "butterflies_butterfly_white_animated.png"),
+    bug!(insects::BUTTERFLY_RED, "esp:butterfly_red", "Red Butterfly", "butterflies_butterfly_red_animated.png"),
+    bug!(insects::BUTTERFLY_VIOLET, "esp:butterfly_violet", "Violet Butterfly", "butterflies_butterfly_violet_animated.png"),
+    hidden_bug!(insects::HIDDEN_BUTTERFLY_WHITE, "esp:hidden_butterfly_white"),
+    hidden_bug!(insects::HIDDEN_BUTTERFLY_RED, "esp:hidden_butterfly_red"),
+    hidden_bug!(insects::HIDDEN_BUTTERFLY_VIOLET, "esp:hidden_butterfly_violet"),
+    bug!(insects::FIREFLY, "esp:firefly", "Firefly", "fireflies_firefly_animated.png"),
+    hidden_bug!(insects::HIDDEN_FIREFLY, "esp:hidden_firefly"),
+    Node {
+        id: insects::FIREFLY_BOTTLE,
+        name: "esp:firefly_bottle",
+        description: "Firefly in a Bottle",
+        tiles: ["fireflies_bottle_animated.png"; 6],
+        groups: &[("vessel", 1), ("dig_immediate", 3), ("attached_node", 1)],
+        drop: insects::FIREFLY_BOTTLE,
+        drop_count: 1,
+        kind: Kind::Vessel,
+    },
 ];
 
 /// minetest_game's savanna grass groups.
@@ -4159,6 +4205,23 @@ pub const TOOLS: &[Tool] = &[
         caps: HAND,
         groups: &[],
     },
+    // The fireflies mod's bug net: it catches butterflies and fireflies
+    // (group catchable) at once, and only it can point at them (its
+    // pointabilities). Picture CC BY-SA 3.0, see media/LICENSE-fireflies.txt.
+    Tool {
+        id: TOOL_BUG_NET,
+        name: "esp:bug_net",
+        description: "Bug Net",
+        image: "fireflies_bugnet.png",
+        wield_image: "fireflies_bugnet.png",
+        caps: ToolCaps {
+            full_punch_interval: 1.4,
+            max_drop_level: 1,
+            groupcaps: &[GroupCap { group: "catchable", times: &[(1, 0.0), (2, 0.0), (3, 0.0)], uses: insects::NET_USES, maxlevel: 1 }],
+            fleshy: 0,
+        },
+        groups: &[],
+    },
 ];
 
 /// The sound a tool makes when it wears out (minetest_game's sound.breaks).
@@ -4269,13 +4332,15 @@ pub fn light_source(id: u16) -> u8 {
         Some(n) if n.id == CONTENT_FURNACE_ACTIVE => FURNACE_LIGHT,
         Some(n) if n.id == CONTENT_MESE_BLOCK => MESE_LIGHT,
         Some(n) if n.id == CONTENT_MESE_LAMP || n.kind == Kind::Post => MESE_LAMP_LIGHT,
+        Some(n) if n.id == insects::FIREFLY => insects::FIREFLY_LIGHT,
+        Some(n) if n.id == insects::FIREFLY_BOTTLE => insects::BOTTLE_LIGHT,
         _ => 0,
     }
 }
 
 /// Whether light passes through a node (fading by one level per node).
 pub fn passes_light(id: u16) -> bool {
-    id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Torch | Kind::Leaves | Kind::Sapling | Kind::Vessel | Kind::Apple | Kind::Mark | Kind::Chest | Kind::ChestOpen | Kind::Glass | Kind::Ladder | Kind::Shaped | Kind::Door | Kind::DoorHidden | Kind::Trapdoor | Kind::Liquid | Kind::Plant | Kind::Seed | Kind::Bed | Kind::BedTop | Kind::Fence | Kind::Gate | Kind::Stalk | Kind::Stem | Kind::Lamp | Kind::SnowLayer | Kind::Lily | Kind::Pane | Kind::Wall | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder))
+    id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Torch | Kind::Leaves | Kind::Sapling | Kind::Vessel | Kind::Apple | Kind::Mark | Kind::Chest | Kind::ChestOpen | Kind::Glass | Kind::Ladder | Kind::Shaped | Kind::Door | Kind::DoorHidden | Kind::Trapdoor | Kind::Liquid | Kind::Plant | Kind::Seed | Kind::Bed | Kind::BedTop | Kind::Fence | Kind::Gate | Kind::Stalk | Kind::Stem | Kind::Lamp | Kind::SnowLayer | Kind::Lily | Kind::Pane | Kind::Wall | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder | Kind::Bug | Kind::BugHidden))
 }
 
 /// Whether a node is a liquid (water or lava).
@@ -4322,19 +4387,23 @@ pub fn damage_per_second(id: u16) -> u16 {
 /// Whether water washes a node away (minetest_game's floodable): torches
 /// and snow.
 pub fn floodable(id: u16) -> bool {
-    is_torch(id) || id == CONTENT_SNOW_LAYER || id == colours::WATERLILY || fire::is_flame(id)
+    is_torch(id) || id == CONTENT_SNOW_LAYER || id == colours::WATERLILY || fire::is_flame(id) || insects::is_insect(id)
 }
 
 /// Whether placing a node can replace this one (builtin's buildable_to):
 /// air, an apple mark, or water.
 pub fn buildable_to(id: u16) -> bool {
-    id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Mark | Kind::Liquid | Kind::Plant | Kind::SnowLayer | Kind::Lily | Kind::Mist | Kind::Fire))
+    // Shown insects, and a hidden firefly; a hidden butterfly isn't, in
+    // minetest_game.
+    id == crate::world::CONTENT_AIR
+        || id == insects::HIDDEN_FIREFLY
+        || def(id).is_some_and(|n| matches!(n.kind, Kind::Mark | Kind::Liquid | Kind::Plant | Kind::SnowLayer | Kind::Lily | Kind::Mist | Kind::Fire | Kind::Bug))
 }
 
 /// Whether direct sunlight carries on down through a node at full
 /// strength. Leaves let light through but cast shade.
 pub fn passes_sunlight(id: u16) -> bool {
-    id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Torch | Kind::Sapling | Kind::Vessel | Kind::Apple | Kind::Mark | Kind::Glass | Kind::Ladder | Kind::Door | Kind::DoorHidden | Kind::Plant | Kind::Seed | Kind::Fence | Kind::Gate | Kind::Stalk | Kind::Stem | Kind::Lamp | Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder))
+    id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Torch | Kind::Sapling | Kind::Vessel | Kind::Apple | Kind::Mark | Kind::Glass | Kind::Ladder | Kind::Door | Kind::DoorHidden | Kind::Plant | Kind::Seed | Kind::Fence | Kind::Gate | Kind::Stalk | Kind::Stem | Kind::Lamp | Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder | Kind::Bug | Kind::BugHidden))
 }
 
 /// Whether a node's collision box reaches half a node above it (fences,
@@ -5109,6 +5178,19 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("env_sounds_water.4.ogg", include_bytes!("../media/env_sounds_water.4.ogg")),
     ("env_sounds_lava.1.ogg", include_bytes!("../media/env_sounds_lava.1.ogg")),
     ("env_sounds_lava.2.ogg", include_bytes!("../media/env_sounds_lava.2.ogg")),
+    // Butterflies and fireflies (insects.rs).
+    ("butterflies_butterfly_red.png", include_bytes!("../media/butterflies_butterfly_red.png")),
+    ("butterflies_butterfly_red_animated.png", include_bytes!("../media/butterflies_butterfly_red_animated.png")),
+    ("butterflies_butterfly_violet.png", include_bytes!("../media/butterflies_butterfly_violet.png")),
+    ("butterflies_butterfly_violet_animated.png", include_bytes!("../media/butterflies_butterfly_violet_animated.png")),
+    ("butterflies_butterfly_white.png", include_bytes!("../media/butterflies_butterfly_white.png")),
+    ("butterflies_butterfly_white_animated.png", include_bytes!("../media/butterflies_butterfly_white_animated.png")),
+    ("fireflies_bottle.png", include_bytes!("../media/fireflies_bottle.png")),
+    ("fireflies_bottle_animated.png", include_bytes!("../media/fireflies_bottle_animated.png")),
+    ("fireflies_bugnet.png", include_bytes!("../media/fireflies_bugnet.png")),
+    ("fireflies_firefly.png", include_bytes!("../media/fireflies_firefly.png")),
+    ("fireflies_firefly_animated.png", include_bytes!("../media/fireflies_firefly_animated.png")),
+    ("default_invisible_node_overlay.png", include_bytes!("../media/default_invisible_node_overlay.png")),
     // Mobs (mobs.rs).
     ("mobs_mossling.png", include_bytes!("../media/mobs_mossling.png")),
     ("mobs_mossling_chatter.1.ogg", include_bytes!("../media/mobs_mossling_chatter.1.ogg")),
@@ -5163,6 +5245,9 @@ struct Item<'a> {
     /// Left-click uses it (an apple is eaten) instead of digging.
     usable: bool,
     liquids_pointable: bool,
+    /// Node groups it can point at that otherwise can't be (a bug net:
+    /// insects).
+    points_at: &'a [&'a str],
 }
 
 /// Serialised ToolCapabilities (version 5, protocol >= 38).
@@ -5462,8 +5547,35 @@ fn serialize_item(item: &Item) -> Vec<u8> {
     no_sound(&mut w);
     // >= 5.8: optional place_param2
     w.u8(0);
-    // Later optional sections are omitted; the client uses defaults.
+    // Later optional sections are omitted, the client using defaults,
+    // except for an item that points at what others can't.
+    if !item.points_at.is_empty() {
+        w.u8(0) // wallmounted_rotate_vertical
+            .u8(2)
+            .u8(2)
+            .u8(2); // touch_interaction: as the user's settings say
+        // Pointabilities (version 0): no nodes by name, these node groups
+        // pointable, no objects.
+        let mut p = Writer::plain();
+        p.u8(0).u32(0).u32(item.points_at.len() as u32);
+        for group in item.points_at {
+            p.string16(group).u8(1); // PointabilityType::POINTABLE
+        }
+        p.u32(0).u32(0);
+        w.bytes16(&p.into_inner());
+        w.u8(0); // no wear bar parameters
+    }
     w.into_inner()
+}
+
+/// A hidden insect's picture: the insect's, marked invisible.
+fn hidden_bug_image(id: u16) -> &'static str {
+    match id {
+        insects::HIDDEN_BUTTERFLY_WHITE => "butterflies_butterfly_white.png^default_invisible_node_overlay.png",
+        insects::HIDDEN_BUTTERFLY_RED => "butterflies_butterfly_red.png^default_invisible_node_overlay.png",
+        insects::HIDDEN_BUTTERFLY_VIOLET => "butterflies_butterfly_violet.png^default_invisible_node_overlay.png",
+        _ => "fireflies_firefly.png^default_invisible_node_overlay.png",
+    }
 }
 
 /// The serialised ItemDefManager, before compression.
@@ -5482,6 +5594,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
         groups: &[],
         usable: false,
         liquids_pointable: false,
+        points_at: &[],
     }];
     for n in NODES {
         items.push(Item {
@@ -5496,6 +5609,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 _ if n.id == farming::DRY_GRASS[0] => "default_dry_grass_3.png",
                 Kind::Sapling | Kind::Apple | Kind::Ladder | Kind::Plant | Kind::Seed => n.tiles[0],
                 _ if n.id == VESSELS_DRINKING_GLASS => "vessels_drinking_glass_inv.png",
+                _ if n.id == insects::FIREFLY_BOTTLE => insects::image(n.id),
                 Kind::Vessel => n.tiles[0],
                 Kind::Trapdoor => trapdoor_image(n.id),
                 Kind::Bed => bed_image(n.id),
@@ -5509,6 +5623,8 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 Kind::Sign => sign_image(n.id),
                 Kind::Fire => fire::FLAME_IMAGE,
                 Kind::Powder => tnt::POWDER_IMAGE,
+                Kind::Bug => insects::image(n.id),
+                Kind::BugHidden => hidden_bug_image(n.id),
                 _ => "",
             },
             wield_image: match n.kind {
@@ -5517,6 +5633,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 _ if n.id == farming::DRY_GRASS[0] => "default_dry_grass_3.png",
                 Kind::Sapling | Kind::Apple | Kind::Ladder | Kind::Plant | Kind::Seed => n.tiles[0],
                 _ if n.id == VESSELS_DRINKING_GLASS => "vessels_drinking_glass_inv.png",
+                _ if n.id == insects::FIREFLY_BOTTLE => insects::image(n.id),
                 Kind::Vessel => n.tiles[0],
                 Kind::Trapdoor => trapdoor_image(n.id),
                 Kind::Bed => bed_image(n.id),
@@ -5529,6 +5646,8 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 Kind::Sign => sign_image(n.id),
                 Kind::Fire => fire::FLAME_IMAGE,
                 Kind::Powder => tnt::POWDER_IMAGE,
+                Kind::Bug => insects::image(n.id),
+                Kind::BugHidden => hidden_bug_image(n.id),
                 _ => "",
             },
             wield_scale: [1.0, 1.0, 1.0],
@@ -5544,6 +5663,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
             usable: n.kind == Kind::Apple || colours::is_mushroom(n.id),
             // A waterlily is put on water, pointed at.
             liquids_pointable: n.kind == Kind::Lily,
+            points_at: &[],
         });
     }
     for c in CRAFTITEMS {
@@ -5566,6 +5686,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
             // binoculars and the mapping kit, which update the player)
             usable: matches!(c.id, ITEM_BUCKET_EMPTY | ITEM_BREAD | ITEM_BLUEBERRIES | ITEM_BOOK | ITEM_BOOK_WRITTEN | ITEM_SKELETON_KEY | ITEM_BINOCULARS | ITEM_MAPPING_KIT),
             liquids_pointable: liquids_pointable(c.id),
+            points_at: &[],
         });
     }
     for t in TOOLS {
@@ -5584,6 +5705,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
             // Hoes are used (left-click) on dirt.
             usable: farming::hoe_uses(t.id).is_some() || t.id == TOOL_SCREWDRIVER || t.id == TOOL_FLINT_AND_STEEL,
             liquids_pointable: false,
+            points_at: if t.id == TOOL_BUG_NET { &["catchable"] } else { &[] },
         });
     }
 
@@ -5660,7 +5782,7 @@ fn animation_length(tile: &str) -> Option<f32> {
         LAVA_FLOWING_TILE => Some(3.3),
         fire::FLAME_TILE => Some(1.0),
         t if tnt::is_animated(t) => Some(1.0),
-        _ => None,
+        t => insects::tile_length(t),
     }
 }
 
@@ -5879,7 +6001,7 @@ fn serialize_node(n: &Node) -> Vec<u8> {
         w.u8(CPT_LIGHT).u8(if wheat { CPT2_MESHOPTIONS } else { 0 });
     } else if seed {
         w.u8(CPT_LIGHT).u8(CPT2_WALLMOUNTED);
-    } else if fence || stalk || matches!(n.kind, Kind::Lamp | Kind::SnowLayer | Kind::Post | Kind::Mist | Kind::Fire | Kind::Powder) {
+    } else if fence || stalk || matches!(n.kind, Kind::Lamp | Kind::SnowLayer | Kind::Post | Kind::Mist | Kind::Fire | Kind::Powder | Kind::Bug | Kind::BugHidden) {
         w.u8(CPT_LIGHT).u8(0);
     } else if n.kind == Kind::Lily || flat_pane {
         // Turned any way (facedir), as minetest_game places it.
@@ -5920,6 +6042,8 @@ fn serialize_node(n: &Node) -> Vec<u8> {
         Kind::Lamp | Kind::Mist => (NDT_GLASSLIKE, ""),
         Kind::Fire => (NDT_FIRELIKE, ""),
         Kind::Powder => (NDT_RAILLIKE, ""),
+        Kind::Bug => (NDT_PLANTLIKE, ""),
+        Kind::BugHidden => (NDT_AIRLIKE, ""),
         Kind::SnowLayer => (NDT_NODEBOX, ""),
         Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign => (NDT_NODEBOX, ""),
         Kind::Liquid if flowing => (NDT_FLOWINGLIQUID, ""),
@@ -5948,7 +6072,7 @@ fn serialize_node(n: &Node) -> Vec<u8> {
         TILE_FLAG_TILEABLE_HORIZONTAL | TILE_FLAG_TILEABLE_VERTICAL | culling
     } else if gate.is_some() {
         TILE_FLAG_TILEABLE_HORIZONTAL | TILE_FLAG_TILEABLE_VERTICAL | TILE_FLAG_BACKFACE_CULLING
-    } else if sapling || ladder || plant || seed || stalk {
+    } else if sapling || ladder || plant || seed || stalk || n.kind == Kind::Bug {
         0
     } else {
         TILE_FLAG_BACKFACE_CULLING
@@ -5990,7 +6114,7 @@ fn serialize_node(n: &Node) -> Vec<u8> {
         .u8(255)
         .u8(255) // colour
         .string16("") // palette
-        .u8(if liquid && !lava { 3 } else if plant || rooted { 1 } else { 0 }) // waving: water ripples, plants sway
+        .u8(if liquid && !lava { 3 } else if plant || rooted || n.kind == Kind::Bug { 1 } else { 0 }) // waving: water ripples, plants (and insects) sway
         // A gate or a flat pane is joined only on its left and right.
         .u8(if gate.is_some() || flat_pane { fences::GATE_SIDES } else { 0 }); // connect_sides
     // connects_to: what a fence or a connected pane joins.
@@ -6021,7 +6145,7 @@ fn serialize_node(n: &Node) -> Vec<u8> {
 
     // lighting
     let doorway = door.is_some() || hidden;
-    w.u8((torch || leaves || sapling || mark || chest || glass || ladder || shaped.is_some() || doorway || trapdoor.is_some() || liquid || plant || seed || bed || fence || gate.is_some() || stalk || matches!(n.kind, Kind::Lamp | Kind::SnowLayer | Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder)) as u8) // light_propagates
+    w.u8((torch || leaves || sapling || mark || chest || glass || ladder || shaped.is_some() || doorway || trapdoor.is_some() || liquid || plant || seed || bed || fence || gate.is_some() || stalk || matches!(n.kind, Kind::Lamp | Kind::SnowLayer | Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder | Kind::Bug | Kind::BugHidden)) as u8) // light_propagates
         .u8(passes_sunlight(n.id) as u8) // sunlight_propagates
         .u8(glow(n.id));
 
@@ -6032,11 +6156,12 @@ fn serialize_node(n: &Node) -> Vec<u8> {
     // The hidden door node is walkable, as minetest_game's (falling nodes
     // stop on it), though its collision box is tiny.
     w.u8((walkable(n.id) || hidden) as u8) // walkable
-        .u8(if mark || hidden || liquid || n.kind == Kind::Mist { 0 } else { POINTABLE })
-        .u8(!(mark || hidden || liquid || n.kind == Kind::Mist) as u8) // diggable
+        // Insects: pointed at only with a bug net (its pointabilities).
+        .u8(if mark || hidden || liquid || matches!(n.kind, Kind::Mist | Kind::Bug | Kind::BugHidden) { 0 } else { POINTABLE })
+        .u8(!(mark || hidden || liquid || matches!(n.kind, Kind::Mist | Kind::BugHidden)) as u8) // diggable
         .u8(ladder as u8) // climbable
-        .u8((mark || liquid || plant || matches!(n.kind, Kind::Mist | Kind::Fire)) as u8) // buildable_to
-        .u8(matches!(n.kind, Kind::Furnace | Kind::Chest | Kind::ChestOpen | Kind::Door | Kind::Trapdoor | Kind::Bed | Kind::Gate | Kind::Bones | Kind::Shelf) as u8) // rightclickable
+        .u8((mark || liquid || plant || matches!(n.kind, Kind::Mist | Kind::Fire | Kind::Bug) || n.id == insects::HIDDEN_FIREFLY) as u8) // buildable_to
+        .u8((matches!(n.kind, Kind::Furnace | Kind::Chest | Kind::ChestOpen | Kind::Door | Kind::Trapdoor | Kind::Bed | Kind::Gate | Kind::Bones | Kind::Shelf) || n.id == insects::FIREFLY_BOTTLE) as u8) // rightclickable
         .u32(damage_per_second(n.id) as u32); // damage_per_second
 
     // liquid
@@ -6096,6 +6221,8 @@ fn serialize_node(n: &Node) -> Vec<u8> {
         fixed_nodebox(&mut w, &[VESSEL_BOX]);
     } else if n.kind == Kind::Powder {
         fixed_nodebox(&mut w, &[tnt::POWDER_BOX]);
+    } else if n.kind == Kind::Bug {
+        fixed_nodebox(&mut w, &[insects::BOX]);
     } else if sapling {
         sapling_selection_box(&mut w);
     } else if door.is_some() {

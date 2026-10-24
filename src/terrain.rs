@@ -56,6 +56,7 @@ const SEED_FLOWERS: u32 = 0xC2D3_E4F5;
 const SEED_SHRUBS: u32 = 0x0329_5157;
 const SEED_RIVERS: u32 = 0x6B7C_8D9E;
 const SEED_EMERGENT: u32 = 0x2685_0A0B;
+const SEED_INSECTS: u32 = 0x5C1E_7F02;
 
 /// Deep caves are flooded with lava up to this height, in about half the
 /// land (where the "lava" noise is positive). Between flooded and dry
@@ -1333,6 +1334,46 @@ pub fn plant_on(x: i32, z: i32, col: &Column) -> Option<u16> {
     ((h >> 8) % 1000 < (density * 1000.0) as u32).then(|| grasses[((h >> 20) % 5) as usize])
 }
 
+/// The butterfly or firefly hanging over a column, if any, and how far
+/// above its surface (minetest_game's butterflies and fireflies
+/// decorations): butterflies three nodes up over the grassland's grass
+/// (fill ratio 0.005) where a flower grows beside (spawn_by group:flower),
+/// one of the three kinds at random; fireflies, hidden by day, three or
+/// four up in the woods (deciduous, coniferous and rainforest; 0.0005
+/// each). `column` gives the columns round about. The caller checks that
+/// the node is air (not in a tree).
+pub fn insect_over(x: i32, z: i32, col: &Column, column: &dyn Fn(i32, i32) -> Column) -> Option<(i32, u16)> {
+    use crate::insects;
+    if col.height <= WATER_LEVEL || col.cave_top >= col.height {
+        return None;
+    }
+    let h = hash(x, 0x1B5, z, SEED_INSECTS);
+    let roll = h % 10_000;
+    let woods = match col.biome {
+        Biome::Grassland if col.height >= FIR_LINE => true,
+        Biome::Grassland => fbm2(x as f32 / 220.0, z as f32 / 220.0, 2, SEED_FOREST) > 0.1,
+        Biome::Rainforest => true,
+        _ => false,
+    };
+    if woods && roll < 10 {
+        return Some((if roll < 5 { 3 } else { 4 }, insects::HIDDEN_FIREFLY));
+    }
+    if col.biome != Biome::Grassland || col.height >= FIR_LINE || !(10..60).contains(&roll) {
+        return None;
+    }
+    // A flower in one of the eight columns round about, on ground as high.
+    let flower = (-1..=1).any(|dz| {
+        (-1..=1).any(|dx| {
+            if dx == 0 && dz == 0 {
+                return false;
+            }
+            let c = column(x + dx, z + dz);
+            c.height == col.height && plant_on(x + dx, z + dz, &c).is_some_and(|p| crate::content::group_of(p, "flower") > 0)
+        })
+    });
+    flower.then(|| (3, insects::BUTTERFLIES[((h >> 16) % 3) as usize]))
+}
+
 /// An emergent jungle tree's trunk at (x, y, z) at or below the ground:
 /// the map generator force-places it (its roots), into whatever is there.
 pub fn forced_trunk_in(trees: &[Tree], x: i32, y: i32, z: i32) -> Option<u16> {
@@ -1382,6 +1423,33 @@ pub fn tree_node_in(trees: &[Tree], x: i32, y: i32, z: i32) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Butterflies over the grassland, each beside a flower; fireflies in
+    /// the woods, hidden; neither over water.
+    #[test]
+    fn insects() {
+        use crate::insects;
+        let (mut butterflies, mut fireflies) = (0, 0);
+        for z in (-600..600).step_by(1) {
+            for x in (-600..600).step_by(3) {
+                let col = column(x, z);
+                let Some((dy, id)) = insect_over(x, z, &col, &column) else {
+                    continue;
+                };
+                assert!(col.height > WATER_LEVEL);
+                if id == insects::HIDDEN_FIREFLY {
+                    fireflies += 1;
+                    assert!(dy == 3 || dy == 4);
+                } else {
+                    butterflies += 1;
+                    assert!(insects::BUTTERFLIES.contains(&id) && dy == 3 && col.biome == Biome::Grassland);
+                    let flower = (-1..=1).any(|dz| (-1..=1).any(|dx| plant_on(x + dx, z + dz, &column(x + dx, z + dz)).is_some_and(|p| crate::content::group_of(p, "flower") > 0)));
+                    assert!(flower);
+                }
+            }
+        }
+        assert!(butterflies > 5 && fireflies > 20, "{butterflies} butterflies, {fireflies} fireflies");
+    }
 
     /// mgv7's channel: (0.2 - a) * (y - water_level + 17) / 2.5 >= 0.6.
     #[test]

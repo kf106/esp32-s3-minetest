@@ -1,0 +1,21 @@
+Butterflies: textures from Minetest Game's butterflies mod
+(https://github.com/luanti-org/minetest_game, mods/butterflies), unchanged,
+under their original names:
+
+  butterflies_butterfly_white.png, butterflies_butterfly_white_animated.png,
+  butterflies_butterfly_red.png, butterflies_butterfly_red_animated.png,
+  butterflies_butterfly_violet.png, butterflies_butterfly_violet_animated.png
+
+Credits, from that mod's README.md:
+
+Shara RedCat (CC BY-SA 3.0):
+
+- butterflies_butterfly_*.png
+- butterflies_butterfly_*_animated.png
+
+Licensed under Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0):
+https://creativecommons.org/licenses/by-sa/3.0/
+
+The hidden butterflies' and firefly's pictures overlay
+default_invisible_node_overlay.png, from Minetest Game's default mod
+(see LICENSE-items.txt).

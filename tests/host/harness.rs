@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-mod auth; mod beds; mod binoculars; mod board; mod books; mod bones; mod chest; mod clock; mod colours; mod content; mod crafting; mod craftguide; mod doors; mod env_sounds; mod dungeons; mod falling; mod fire; mod farming; mod fences; mod fasthash; mod font; mod furnace; mod indicator; mod inventory; mod items; mod jsonstring; mod keys; mod liquids; mod messages; mod meta; mod mobs; mod nature; mod panes; mod plants; mod privs; mod player; mod protocol;
+mod auth; mod beds; mod binoculars; mod board; mod books; mod bones; mod chest; mod clock; mod colours; mod content; mod crafting; mod craftguide; mod doors; mod env_sounds; mod dungeons; mod falling; mod fire; mod farming; mod fences; mod fasthash; mod font; mod furnace; mod indicator; mod insects; mod inventory; mod items; mod jsonstring; mod keys; mod liquids; mod messages; mod meta; mod mobs; mod nature; mod panes; mod plants; mod privs; mod player; mod protocol;
 mod screen; mod screwdriver; mod server; mod settings; mod sha1; mod sha256; mod skins; mod srp; mod stairs; mod status; mod storage; mod terrain; mod tnt; mod weather; mod wifi_config; mod world; mod zstd;
 
 use std::cell::RefCell;

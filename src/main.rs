@@ -21,6 +21,7 @@ mod fasthash;
 mod font;
 mod furnace;
 mod indicator;
+mod insects;
 mod inventory;
 mod items;
 mod jsonstring;

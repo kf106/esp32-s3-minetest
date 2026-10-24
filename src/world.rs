@@ -130,6 +130,10 @@ struct BlockColumn {
     /// Whether any of the trees is an emergent jungle tree, whose trunk
     /// and roots go into the ground.
     has_emergent: bool,
+    /// The butterflies and (hidden) fireflies generated in it, and the
+    /// highest of them.
+    insects: Vec<(NodePos, u16)>,
+    max_insect: i32,
 }
 
 impl BlockColumn {
@@ -155,6 +159,8 @@ impl BlockColumn {
                 terrain::on_lake(x, z, col).unwrap_or(CONTENT_AIR)
             } else if y == col.height + 1 {
                 terrain::plant_on(x, z, col).unwrap_or(CONTENT_AIR)
+            } else if y <= self.max_insect {
+                self.insects.iter().find(|(p, _)| *p == (x, y, z)).map_or(CONTENT_AIR, |&(_, id)| id)
             } else {
                 CONTENT_AIR
             }
@@ -203,6 +209,8 @@ pub struct State {
     changed_blocks: FastSet<BlockPos>,
     /// Node metadata (meta.rs): a sign's text.
     metas: FastMap<NodePos, Arc<meta::Fields>>,
+    /// Where players have put butterflies and fireflies (or hidden ones).
+    insects: FastSet<NodePos>,
     /// Counts changes; a block built from a snapshot is tagged with it.
     version: u64,
     /// The latest changes and their versions, oldest first.
@@ -484,7 +492,25 @@ impl World {
         }
         let max_tree_top = tree_top.iter().copied().max().unwrap_or(i32::MIN);
         let has_emergent = trees.iter().any(|t| t.kind == terrain::TreeKind::Emergent);
-        let bc = Arc::new(BlockColumn { columns, min_height, max_height, trees, tree_top, max_tree_top, has_emergent });
+        // Butterflies and fireflies, in the air (not in a tree).
+        let mut insects = Vec::new();
+        for z in 0..16 {
+            for x in 0..16 {
+                let col = &columns[(z * 16 + x) as usize];
+                let near = |nx: i32, nz: i32| {
+                    let (lx, lz) = (nx - x0, nz - z0);
+                    if (0..16).contains(&lx) && (0..16).contains(&lz) { columns[(lz * 16 + lx) as usize] } else { terrain::column(nx, nz) }
+                };
+                if let Some((dy, id)) = terrain::insect_over(x0 + x, z0 + z, col, &near) {
+                    let p = (x0 + x, col.height + dy, z0 + z);
+                    if terrain::tree_node_in(&trees, p.0, p.1, p.2).is_none() {
+                        insects.push((p, id));
+                    }
+                }
+            }
+        }
+        let max_insect = insects.iter().map(|(p, _)| p.1).max().unwrap_or(i32::MIN);
+        let bc = Arc::new(BlockColumn { columns, min_height, max_height, trees, tree_top, max_tree_top, has_emergent, insects, max_insect });
         let mut cache = self.block_columns.borrow_mut();
         let made = self.columns_made.get().wrapping_add(1);
         self.columns_made.set(made);
@@ -509,7 +535,7 @@ impl World {
             return h;
         }
         let bc = self.block_column(bx, bz);
-        let h = (bc.min_height, bc.max_height.max(bc.max_tree_top));
+        let h = (bc.min_height, bc.max_height.max(bc.max_tree_top).max(bc.max_insect));
         let mut heights = self.heights.borrow_mut();
         if heights.len() >= HEIGHT_CACHE_MAX {
             heights.clear();
@@ -607,6 +633,11 @@ impl World {
             st.param2s.remove(&pos);
         } else {
             st.param2s.insert(pos, param2);
+        }
+        if crate::insects::is_insect(id) && id != generated && crate::insects::twin(id) != Some(generated) {
+            st.insects.insert(pos);
+        } else {
+            st.insects.remove(&pos);
         }
         if !content::passes_sunlight(id) {
             let top = st.column_top.entry((pos.0, pos.2)).or_insert(pos.1);
@@ -1038,6 +1069,32 @@ impl World {
             })
             .max()
             .unwrap_or(0)
+    }
+
+    /// The butterflies and fireflies (shown or hidden) in a block column:
+    /// those generated, and those players have put there, where they still
+    /// are.
+    pub fn insects_in(&self, bx: i16, bz: i16) -> Vec<NodePos> {
+        let bc = self.block_column(bx, bz);
+        let mut out: Vec<NodePos> = bc.insects.iter().map(|&(p, _)| p).collect();
+        out.extend(self.state.insects.iter().filter(|p| block_of(p.0) == bx && block_of(p.2) == bz).copied());
+        out.retain(|&p| crate::insects::is_insect(self.node(p)));
+        out
+    }
+
+    /// The day light a node gets (Luanti's day bank, before torches):
+    /// full under the open sky, a little less under nothing but leaves
+    /// (and what lets light through), none under a roof.
+    pub fn sunlight_at(&self, p: NodePos) -> u8 {
+        let top = self.highest_solid(p.0, p.2);
+        if top < p.1 {
+            return LIGHT_SUN;
+        }
+        let shaded = (p.1 + 1..=top).all(|y| {
+            let id = self.node((p.0, y, p.2));
+            content::passes_sunlight(id) || (content::passes_light(id) && content::group_of(id, "leaves") > 0)
+        });
+        if shaded { LIGHT_SUN - 2 } else { 0 }
     }
 
     /// The y of the highest solid node in a column (leaves included): below

@@ -18,10 +18,10 @@ A standard, unmodified Luanti client connects to it over Wi-Fi as it would to an
 
 ## What it does
 
-It covers most of Minetest Game: 29 of its 34 mods, with boats, carts, butterflies, fireflies and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
+It covers most of Minetest Game: 31 of its 34 mods, with boats, carts and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
 
 - **[The world](docs/features.md#the-world):** Minetest Game's biomes, from desert and savanna to tundra and icesheet, with hills, mountains, rivers, lakes, caves, lava, ores and dungeons with loot chests; day and night, weather, and fire that spreads (within limits the board can manage).
-- **[Trees, plants and farming](docs/features.md#trees-plants-and-farming):** forests that grow back from saplings, flowers, bushes, kelp and corals, grass that spreads, and wheat and cotton to farm.
+- **[Trees, plants and farming](docs/features.md#trees-plants-and-farming):** forests that grow back from saplings, flowers, bushes, kelp and corals, grass that spreads, wheat and cotton to farm, and butterflies and fireflies to catch.
 - **[Crafting and smelting](docs/features.md#crafting-and-smelting):** Minetest Game's recipes and furnace, with its in-game crafting guide.
 - **[Building](docs/features.md#building):** stairs and slabs, doors and trapdoors, fences, walls, glass panes, chests, signs.
 - **[Tools and items](docs/features.md#tools-and-items):** tools that wear, torches that light caves, flint and steel, TNT and gunpowder (with a switch for moderators), buckets, keys, the screwdriver, binoculars and the mapping kit, books you can write in.

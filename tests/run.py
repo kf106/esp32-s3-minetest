@@ -46,6 +46,7 @@ NETWORK = [
     ("mobs", {}, [], True),
     ("wisp", {}, [], True),
     ("hexer", {}, [], True),
+    ("insects", {"LUANTI_INSECTS_FAST": "1"}, [], False),
     ("door", {}, [], False),
     ("falling", {}, [], False),
     ("chest", {}, [], False),

@@ -163,6 +163,10 @@ pub const RECIPES: &[Recipe] = &[
     Recipe { width: 3, pattern: &[I(ITEM_TNT_STICK); 9], output: tnt::TNT, count: 1 },
     // Flint beside a steel ingot: flint and steel (fire mod).
     Recipe { width: 2, pattern: &[I(ITEM_FLINT), I(ITEM_STEEL_INGOT)], output: TOOL_FLINT_AND_STEEL, count: 1 },
+    // Four string over a stick: a bug net; a firefly over a glass bottle:
+    // a firefly in a bottle (fireflies mod).
+    Recipe { width: 2, pattern: &[I(ITEM_STRING), I(ITEM_STRING), I(ITEM_STRING), I(ITEM_STRING), I(ITEM_STICK), E], output: TOOL_BUG_NET, count: 1 },
+    Recipe { width: 1, pattern: &[I(crate::insects::FIREFLY), I(VESSELS_GLASS_BOTTLE)], output: crate::insects::FIREFLY_BOTTLE, count: 1 },
     // binoculars: obsidian glass lenses either side of three bronze ingots.
     Recipe {
         width: 3,
@@ -716,6 +720,9 @@ mod tests {
         let nine: Vec<(usize, u16, u16)> = (0..9).map(|i| (i, ITEM_TNT_STICK, 1)).collect();
         assert_eq!(result(&grid(&nine)), Some((crate::tnt::TNT, 1)));
         assert_eq!(result(&grid(&[(0, ITEM_FLINT, 1), (1, ITEM_STEEL_INGOT, 1)])), Some((TOOL_FLINT_AND_STEEL, 1)));
+        let net = [(0, ITEM_STRING, 1), (1, ITEM_STRING, 1), (3, ITEM_STRING, 1), (4, ITEM_STRING, 1), (6, ITEM_STICK, 1)];
+        assert_eq!(result(&grid(&net)), Some((TOOL_BUG_NET, 1)));
+        assert_eq!(result(&grid(&[(1, crate::insects::FIREFLY, 1), (4, VESSELS_GLASS_BOTTLE, 1)])), Some((crate::insects::FIREFLY_BOTTLE, 1)));
     }
 
     #[test]

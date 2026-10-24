@@ -24,6 +24,7 @@ use crate::env_sounds;
 use crate::fire;
 use crate::settings;
 use crate::tnt;
+use crate::insects;
 use crate::mobs::{self, Mobs};
 use crate::beds;
 use crate::binoculars;
@@ -69,6 +70,10 @@ const CHEST_HEARING: f32 = 10.0;
 const FURNACE_HEARING: f32 = 16.0;
 /// How far sounds carry by default (Luanti's max_hear_distance).
 const HEARING: f32 = 32.0;
+/// How far from players (map blocks) butterflies and fireflies look at the
+/// light: less than Luanti's active block range (4), to keep the block
+/// columns looked at within what the server keeps worked out.
+const INSECT_RANGE: i16 = 3;
 /// How many nodes a hexer's cast drains at most.
 const DRAIN_NODES: u32 = 4;
 /// How often the heaps are checked for damage.
@@ -536,6 +541,9 @@ pub struct Server {
     fire_burned: Instant,
     fire_sounded: Instant,
     tnt_ignited: Instant,
+    /// When the butterflies and fireflies near players last looked at the
+    /// light (insects.rs).
+    insects_tended: Instant,
     items_burned: Instant,
     /// When the liquids last flowed.
     liquids_flowed: Instant,
@@ -918,6 +926,7 @@ impl Server {
             fire_burned: Instant::now(),
             fire_sounded: Instant::now(),
             tnt_ignited: Instant::now(),
+            insects_tended: Instant::now(),
             items_burned: Instant::now(),
             liquids_flowed: Instant::now(),
             lava_cooled: Instant::now(),
@@ -2280,6 +2289,13 @@ impl Server {
                 if (doors::is_door(target) || doors::is_trapdoor(target) || fences::is_gate(target)) && !sneaking {
                     if in_reach(under) {
                         self.toggle_door(from, node_pos(under));
+                    }
+                    return;
+                }
+                // A firefly in a bottle is let out (its on_rightclick).
+                if target == insects::FIREFLY_BOTTLE && !sneaking {
+                    if in_reach(under) {
+                        self.release_firefly(node_pos(under));
                     }
                     return;
                 }
@@ -4840,6 +4856,66 @@ impl Server {
     }
 
     // -------------------------------------------------------------------
+    // Butterflies and fireflies (insects.rs)
+    // -------------------------------------------------------------------
+
+    /// The butterflies' and fireflies' node timers: each near a player
+    /// (within INSECT_RANGE map blocks) looks at the light where it is, and
+    /// hides or comes out.
+    fn tend_insects(&mut self) {
+        let players: Vec<BlockPos> = self
+            .peers
+            .values()
+            .filter(|p| p.ready)
+            .map(|p| world::block_of_node(((p.pos_bs[0] / 10.0).round() as i32, (p.pos_bs[1] / 10.0).round() as i32, (p.pos_bs[2] / 10.0).round() as i32)))
+            .collect();
+        let mut columns = BTreeSet::new();
+        for b in &players {
+            for bx in b.0 - INSECT_RANGE..=b.0 + INSECT_RANGE {
+                for bz in b.2 - INSECT_RANGE..=b.2 + INSECT_RANGE {
+                    columns.insert((bx, bz));
+                }
+            }
+        }
+        let time = self.time_of_day();
+        let near = |p: NodePos| {
+            let b = world::block_of_node(p);
+            players.iter().any(|c| (b.0 - c.0).abs() <= INSECT_RANGE && (b.1 - c.1).abs() <= INSECT_RANGE && (b.2 - c.2).abs() <= INSECT_RANGE)
+        };
+        let mut turned = Vec::new();
+        for (bx, bz) in columns {
+            for p in self.world.insects_in(bx, bz) {
+                if !near(p) {
+                    continue;
+                }
+                let light = insects::light(self.world.sunlight_at(p), self.world.torch_light_at(p), time);
+                if let Some(to) = insects::turns_into(self.world.node(p), light) {
+                    turned.push((p, to));
+                }
+            }
+        }
+        for (p, to) in turned {
+            self.world.set_node(p, to, 0);
+            let p16 = [p.0 as i16, p.1 as i16, p.2 as i16];
+            self.broadcast_node(p16, &build_addnode(p16, to, 0));
+        }
+    }
+
+    /// A firefly in a bottle at `pos` is let out above it, and the bottle
+    /// is an empty glass bottle again.
+    fn release_firefly(&mut self, pos: NodePos) {
+        let world = &self.world;
+        let Some(to) = insects::release_to(pos, &|p| world.node(p)) else {
+            return;
+        };
+        for (p, id) in [(pos, content::VESSELS_GLASS_BOTTLE), (to, insects::FIREFLY)] {
+            self.world.set_node(p, id, 0);
+            let p16 = [p.0 as i16, p.1 as i16, p.2 as i16];
+            self.broadcast_node(p16, &build_addnode(p16, id, 0));
+        }
+    }
+
+    // -------------------------------------------------------------------
     // Mobs (mobs.rs)
     // -------------------------------------------------------------------
 
@@ -6543,6 +6619,10 @@ impl Server {
         if now.duration_since(self.fire_burned) >= every {
             self.fire_burned = now;
             self.burn_flammables(chance);
+        }
+        if now.duration_since(self.insects_tended) >= insects::every() {
+            self.insects_tended = now;
+            self.tend_insects();
         }
         if now.duration_since(self.tnt_ignited) >= tnt::IGNITION_EVERY {
             self.tnt_ignited = now;

@@ -56,7 +56,18 @@ for _ in range(m.u16()):
     if d.can(): sound(d); sound(d)
     if d.can():
         if d.u8(): d.u8()
-    assert not d.can(), "unexpected 5.9+ section"
+    # >= 5.9: wallmounted_rotate_vertical, touch_interaction,
+    # pointabilities, wear bar (only the bug net sends these)
+    if d.can():
+        d.u8(); assert all(d.u8() <= 2 for _ in range(3))
+        pt = d.str16()
+        if pt:
+            q = R(pt); assert q.u8() == 0
+            maps = [[(q.str16().decode(), q.u8()) for _ in range(q.u32())] for _ in range(4)]
+            q.done(); print(f"    pointabilities {maps}")
+            assert maps[1] == [("catchable", 1)], maps
+        assert d.u8() == 0
+    assert not d.can(), "unexpected section"
     print(f"  item type={t} name={name!r} wield={wield!r} scale={scale} stack={stack} range={rng} color={color:08x} place={pred!r}")
 assert m.u16() == 0; m.done()
 print("ITEMDEF OK")
@@ -77,7 +88,8 @@ def tile(r):
     return name, flags, anim
 def in_bs(b):
     # Boxes go in BS units (10 to a node): one in node units is tiny.
-    assert max(abs(v) for v in b) >= 2, ("box in node units, not BS?", b)
+    # (the smallest real box: an insect's, 0.1 of a node either way)
+    assert max(abs(v) for v in b) >= 1, ("box in node units, not BS?", b)
 def nodebox(r):
     assert r.u8() == 6
     t = r.u8()

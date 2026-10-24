@@ -1,6 +1,6 @@
 # Features
 
-What the server does, as of now. It covers most of Minetest Game (29 of its 34 mods); what is still missing is at the end, under [What doesn't (yet)](#what-doesnt-yet), and what never will be under [What won't be done](#what-wont-be-done).
+What the server does, as of now. It covers most of Minetest Game (31 of its 34 mods); what is still missing is at the end, under [What doesn't (yet)](#what-doesnt-yet), and what never will be under [What won't be done](#what-wont-be-done).
 
 ![In game, connected to the ESP32 server](../assets/screen-002.png)
 
@@ -61,6 +61,11 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
   - **Bushes:** plain and blueberry bushes in the grassland, fir bushes among the firs and in the snow, acacia bushes on the savanna. Their leaves give a bush sapling one time in 5, their stems a plank. Pick blueberries for 2 HP each; the bush bears again 5 to 25 minutes later.
   - **Ferns** under the firs and **marram grass** on sandy lake shores.
   - **Kelp** on the beds of deep, cool lakes, up to 6 nodes tall, and **corals** (green, pink, cyan, brown, orange) in warm lakes. Digging kelp leaves the sand and gives the kelp, which goes back into sand with water above; a coral leaves its skeleton.
+- **Butterflies and fireflies, as in Minetest Game:**
+  - White, red and violet butterflies hang about flowers on the grassland, three nodes up; fireflies in the woods (deciduous, coniferous and rainforest), three or four up, glowing. They sway, but don't move about: as in Minetest Game they are nodes, not creatures.
+  - Butterflies are out where the light is 11 or more (by day, out of the shade) and hide where it is less; fireflies the other way round, out at night and in the shade, hidden in daylight. Each looks at the light every 10 s (Minetest Game's node timer: 30 s), within 3 map blocks of players.
+  - Only a **bug net** (four string over a stick) can point at them, and catches one at once (256 catches); put one down again and it flies there.
+  - A firefly over a glass bottle makes a **firefly in a bottle**, a light (9). Right-click it and the firefly flies out, leaving the empty bottle.
 - **Farming:** Minetest Game's wheat and cotton.
   - Tall grass grows on grassland; digging it gives a wheat seed one time in five. Jungle grass in the rainforest gives a cotton seed one time in eight. Wild cotton grows in patches on grassland and savanna and gives cotton seeds.
   - A hoe (two planks, stones or steel ingots over two sticks, like Minetest Game's) turns dirt, grass or forest litter into soil with a left-click, savanna dirt (with or without its grass) into savanna soil, and desert sand into desert sand soil (which falls like sand). Soil within 3 nodes of water turns wet; without water it dries, and bare dry soil turns back into its dirt or sand.
@@ -167,14 +172,13 @@ Not part of Minetest Game, which has none, so they are off unless an admin or mo
 
 ## What doesn't (yet)
 
-Five of Minetest Game's 34 mods are still to come:
+Three of Minetest Game's 34 mods are still to come:
 
 - **Boats:** wooden boats to row across water.
 - **Carts:** minecarts, with rails (plain, powered and brake rails) to run them on.
-- **Butterflies and fireflies:** the small creatures that flutter over grass and glow at night, and the bug net that catches them (fireflies in a bottle make a light).
 - **Creative mode:** the creative inventory, with every item to take, and digging without limits.
 
-(Boats and carts count as one mod each; butterflies and fireflies as two.)
+(Boats and carts count as one mod each.)
 
 Smaller gaps in what is here:
 
