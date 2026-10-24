@@ -3,7 +3,9 @@
 //! minetest_game's names: `enable_fire` (whether fire spreads and burns
 //! things) and `enable_tnt` (whether TNT and gunpowder can be lit). Both
 //! are on in a new world (minetest_game turns them off on servers unless
-//! set; here `/fire` and `/tnt` turn them off).
+//! set; here `/fire` and `/tnt` turn them off). And ours, `enable_mobs`
+//! (whether hostile mobs spawn: mobs.rs), off in a new world, since
+//! minetest_game has none (`/mobs` turns them on).
 
 use std::io;
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ pub struct Settings {
     path: PathBuf,
     fire: bool,
     tnt: bool,
+    mobs: bool,
 }
 
 impl Settings {
@@ -31,13 +34,17 @@ impl Settings {
         };
         let fire = flag(&text, "enable_fire").unwrap_or(true);
         let tnt = flag(&text, "enable_tnt").unwrap_or(true);
+        let mobs = flag(&text, "enable_mobs").unwrap_or(false);
         if !fire {
             info!("Fire spreading is off (enable_fire = false in {})", path.display());
         }
         if !tnt {
             info!("TNT is off (enable_tnt = false in {})", path.display());
         }
-        Self { path, fire, tnt }
+        if mobs {
+            info!("Mobs are on (enable_mobs = true in {})", path.display());
+        }
+        Self { path, fire, tnt, mobs }
     }
 
     /// Whether fire spreads and burns things.
@@ -48,6 +55,16 @@ impl Settings {
     /// Whether TNT and gunpowder can be lit.
     pub fn tnt(&self) -> bool {
         self.tnt
+    }
+
+    /// Whether hostile mobs spawn.
+    pub fn mobs(&self) -> bool {
+        self.mobs
+    }
+
+    pub fn set_mobs(&mut self, on: bool) {
+        self.mobs = on;
+        self.save();
     }
 
     pub fn set_fire(&mut self, on: bool) {
@@ -61,7 +78,7 @@ impl Settings {
     }
 
     fn save(&self) {
-        let text = format!("enable_fire = {}\nenable_tnt = {}\n", self.fire, self.tnt);
+        let text = format!("enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\n", self.fire, self.tnt, self.mobs);
         if let Err(e) = storage::write(&self.path, text.as_bytes()) {
             warn!("Saving {}: {e}", self.path.display());
             crate::status::problem();
@@ -96,7 +113,11 @@ mod tests {
         assert!(!s.fire() && s.tnt());
         s.set_tnt(false);
         let s = Settings::open(&path);
-        assert!(!s.fire() && !s.tnt());
+        assert!(!s.fire() && !s.tnt() && !s.mobs());
+        let mut s = Settings::open(&path);
+        s.set_mobs(true);
+        let s = Settings::open(&path);
+        assert!(!s.fire() && s.mobs());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

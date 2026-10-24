@@ -1022,6 +1022,24 @@ impl World {
         }
     }
 
+    /// The light torches (and other lights) give a node: what lights it at
+    /// night, when there is no sunlight.
+    pub fn torch_light_at(&self, p: NodePos) -> u8 {
+        let side = FIELD_SIDE;
+        self.state
+            .torch_light
+            .iter()
+            .filter_map(|(t, field)| {
+                let d = (p.0 - t.0, p.1 - t.1, p.2 - t.2);
+                if d.0.abs() > TORCH_REACH || d.1.abs() > TORCH_REACH || d.2.abs() > TORCH_REACH {
+                    return None;
+                }
+                Some(field[(((d.2 + TORCH_REACH) * side + d.1 + TORCH_REACH) * side + d.0 + TORCH_REACH) as usize])
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The y of the highest solid node in a column (leaves included): below
     /// it is out of direct sunlight, and on it is where a player can stand.
     pub fn highest_solid(&self, x: i32, z: i32) -> i32 {

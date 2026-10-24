@@ -24,6 +24,7 @@ use crate::env_sounds;
 use crate::fire;
 use crate::settings;
 use crate::tnt;
+use crate::mobs::{self, Mobs};
 use crate::beds;
 use crate::binoculars;
 use crate::keys;
@@ -497,6 +498,9 @@ pub struct Server {
     /// Dropped items, and when they were last moved on.
     items: Items,
     items_stepped: Instant,
+    /// Hostile mobs (mobs.rs), when on; when spawning was last tried.
+    mobs: Mobs,
+    mobs_spawned: Instant,
     /// Sand and gravel on their way down (falling.rs).
     falling: Vec<Falling>,
     /// When the furnaces' timers last ran.
@@ -928,6 +932,8 @@ impl Server {
             heap_check_timed: false,
             heap_damaged: false,
             items_stepped: Instant::now(),
+            mobs: Mobs::new(),
+            mobs_spawned: Instant::now(),
             falling: Vec::new(),
             furnaces_stepped: Instant::now(),
             bones_checked: Instant::now(),
@@ -1808,6 +1814,9 @@ impl Server {
         for d in self.items.iter() {
             for_new.push((d.id, item_init(d)));
         }
+        for m in self.mobs.iter() {
+            for_new.push((m.id, mobs::init_data(m)));
+        }
         info!(
             "Adding player object {new_id}; {} other player(s) online",
             others.len()
@@ -2016,7 +2025,11 @@ impl Server {
         }
         if let Pointed::Object(id) = msg.pointed {
             if msg.action == INTERACT_START_DIGGING && !dead {
-                self.pick_up(from, id, body);
+                if mobs::is_mob_id(id) {
+                    self.punch_mob(from, id, msg.item as usize, body);
+                } else {
+                    self.pick_up(from, id, body);
+                }
             }
             return;
         }
@@ -4795,6 +4808,198 @@ impl Server {
         }
     }
 
+    // -------------------------------------------------------------------
+    // Mobs (mobs.rs)
+    // -------------------------------------------------------------------
+
+    /// The players as the mobs see them.
+    fn mob_players(&self) -> Vec<mobs::Player> {
+        self.peers
+            .values()
+            .filter(|p| p.ready)
+            .map(|p| mobs::Player { id: p.id, pos: p.pos_bs.map(|v| v / 10.0), alive: p.hp > 0 })
+            .collect()
+    }
+
+    fn step_mobs(&mut self, dt: f32) {
+        if self.mobs.is_empty() {
+            return;
+        }
+        let players = self.mob_players();
+        let day = mobs::daytime(self.time_of_day());
+        let terrain = MobTerrain(&self.world);
+        let events = self.mobs.step(dt, &terrain, &players, day, &mut self.rng);
+        self.mob_events(events);
+    }
+
+    /// Now and then, at night, packs come near players.
+    fn spawn_mobs(&mut self) {
+        if !self.settings.mobs() || !mobs::dark(self.time_of_day()) {
+            return;
+        }
+        let players = self.mob_players();
+        if players.is_empty() {
+            return;
+        }
+        let terrain = MobTerrain(&self.world);
+        let events = self.mobs.spawn(&terrain, &players, &mut self.rng);
+        if !events.is_empty() {
+            info!("{} mobs about", self.mobs.len());
+        }
+        self.mob_events(events);
+    }
+
+    /// Tell clients what the mobs did, and hurt the players they hit.
+    fn mob_events(&mut self, events: Vec<mobs::Event>) {
+        use mobs::Event;
+        let mut messages: Vec<(u16, Vec<u8>)> = Vec::new();
+        let mut added = Vec::new();
+        let mut removed = Vec::new();
+        for e in events {
+            match e {
+                Event::Added(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        added.push((id, mobs::init_data(m)));
+                    }
+                }
+                Event::Removed(id) => removed.push(id),
+                Event::Moved(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        messages.push((id, mobs::position(m)));
+                    }
+                }
+                Event::Animated(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        messages.push((id, set_animation_message(mobs::animation(m.anim))));
+                    }
+                }
+                Event::Sinking(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        messages.push((id, mobs::properties(m, false)));
+                        messages.push((id, set_animation_message(mobs::animation(mobs::Anim::Stand))));
+                        messages.push((id, mobs::position(m)));
+                    }
+                }
+                Event::Sound(id, sound, gain, range) => self.mob_sound(id, sound, gain, range),
+                Event::Hit { mob, player, damage, push } => {
+                    let kills = self.mobs.get(mob).map_or("was killed", |m| m.def().kills);
+                    let Some(addr) = self.peers.iter().find(|(_, p)| p.id == player && p.ready).map(|(a, _)| *a) else {
+                        continue;
+                    };
+                    self.hurt(addr, damage, kills);
+                    self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
+                }
+            }
+        }
+        if !added.is_empty() || !removed.is_empty() {
+            self.send_to_players(&build_remove_add(&removed, &added));
+        }
+        if !messages.is_empty() {
+            self.send_to_players(&build_object_messages(&messages));
+        }
+    }
+
+    /// A sound from a mob, following it, for players within `range`.
+    fn mob_sound(&mut self, id: u16, sound: &str, gain: f32, range: f32) {
+        let Some(pos_bs) = self.mobs.get(id).map(|m| m.pos_bs()) else {
+            return;
+        };
+        let packet = build_play_sound_object(-1, sound, gain, pos_bs, id, false);
+        let reach = range * 10.0;
+        let near: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.ready && (0..3).map(|i| (p.pos_bs[i] - pos_bs[i]).powi(2)).sum::<f32>() <= reach * reach)
+            .map(|(a, _)| *a)
+            .collect();
+        for addr in near {
+            self.send_command(addr, 0, &packet);
+        }
+    }
+
+    /// A player punches a mob, with what is in hand: damage as Luanti
+    /// works it out from the tool, wear on the tool, and at 0 HP the mob
+    /// is gone and leaves its drops.
+    fn punch_mob(&mut self, from: SocketAddr, id: u16, slot: usize, body: [f32; 3]) {
+        let Some(pos) = self.mobs.get(id).map(|m| m.pos) else {
+            return;
+        };
+        let dist: f32 = (0..3).map(|i| (pos[i] - body[i]).powi(2)).sum::<f32>().sqrt();
+        let Some(peer) = self.peers.get(&from) else {
+            return;
+        };
+        if dist > MAX_INTERACT_DISTANCE + 1.0 {
+            return;
+        }
+        let peer_id = peer.id;
+        let feet = peer.pos_bs.map(|v| v / 10.0);
+        let wielded = peer.inventory.get(slot).filter(|_| slot < HOTBAR_SIZE);
+        let caps = content::caps_of(wielded.map(|s| s.id));
+        let since = self.mobs.since_punch(peer_id);
+        let (damage, wear) = mobs::hit_params(caps, since, wielded.map_or(0, |s| s.wear));
+        if wear > 0 {
+            if let Some(mut tool) = wielded {
+                let intact = tool.add_wear(wear);
+                if let Some(peer) = self.peers.get_mut(&from) {
+                    peer.inventory.set(slot, intact.then_some(tool));
+                }
+                if !intact {
+                    self.play_sound_near(-1, content::TOOL_BREAKS, 0.5, body.map(|v| v * 10.0), HEARING);
+                }
+                self.inventory_changed(from);
+            }
+        }
+        if damage == 0 {
+            return;
+        }
+        let Some(hit) = self.mobs.punch(id, peer_id, feet, damage) else {
+            return;
+        };
+        let d = mobs::def(hit.kind);
+        self.send_to_players(&build_object_messages(&[(id, punched_message(hit.hp))]));
+        if hit.hp > 0 {
+            self.mob_sound(id, d.hurt, 0.8, 16.0);
+            if let Some(m) = self.mobs.get(id) {
+                let msg = build_object_messages(&[(id, mobs::position(m))]);
+                self.send_to_players(&msg);
+            }
+            return;
+        }
+        let at = hit.pos.map(|v| v * 10.0);
+        self.play_sound_near(-1, d.death, 0.8, at, 16.0);
+        self.send_to_players(&build_remove_add(&[id], &[]));
+        let (item, lo, hi) = d.drops;
+        let count = self.rng.range(lo, hi) as u16;
+        let drop_at = [hit.pos[0], hit.pos[1] + 0.5, hit.pos[2]];
+        let vel = [(self.rng.range(0, 20) as f32 - 10.0) / 10.0, 2.0, (self.rng.range(0, 20) as f32 - 10.0) / 10.0];
+        self.spawn_item(Stack::new(item, count), (drop_at, vel));
+        if let Some(name) = self.peers.get(&from).map(|p| p.display_name().to_string()) {
+            info!("{name} killed a {}", d.description);
+        }
+    }
+
+    /// Remove every mob (mobs turned off).
+    fn clear_mobs(&mut self) {
+        let ids = self.mobs.clear();
+        if !ids.is_empty() {
+            self.send_to_players(&build_remove_add(&ids, &[]));
+        }
+    }
+
+    /// A pack in front of a player (/mobs spawn). Returns how many came.
+    fn spawn_mobs_near(&mut self, name: &str) -> usize {
+        let Some(peer) = self.peers.values().find(|p| p.ready && p.display_name() == name) else {
+            return 0;
+        };
+        let (pos, yaw) = (peer.pos_bs.map(|v| v / 10.0), peer.yaw.to_radians());
+        let dir = [-yaw.sin(), yaw.cos()];
+        let terrain = MobTerrain(&self.world);
+        let events = self.mobs.spawn_near(&terrain, pos, dir, &mut self.rng);
+        let count = events.len();
+        self.mob_events(events);
+        count
+    }
+
     /// Send a command reliably to every player in the game.
     fn send_to_players(&mut self, packet: &[u8]) {
         let ready: Vec<SocketAddr> = self.peers.iter().filter(|(_, p)| p.ready).map(|(a, _)| *a).collect();
@@ -6087,6 +6292,11 @@ impl Server {
             self.items_stepped = now;
             self.step_items(dt);
             self.step_falling(dt);
+            self.step_mobs(dt);
+        }
+        if now.duration_since(self.mobs_spawned) >= mobs::SPAWN_EVERY {
+            self.mobs_spawned = now;
+            self.spawn_mobs();
         }
         if self.items.save_if_due() {
             self.note("items saved", 0);
@@ -6304,6 +6514,31 @@ fn look_dir(pitch: f32, yaw: f32) -> [f32; 3] {
     let p = (-pitch).to_radians();
     let y = (yaw + 90.0).to_radians();
     [p.cos() * y.cos(), p.sin(), p.cos() * y.sin()]
+}
+
+/// The world as the mobs see it.
+struct MobTerrain<'a>(&'a World);
+
+impl mobs::Terrain for MobTerrain<'_> {
+    fn solid(&self, p: NodePos) -> bool {
+        content::walkable(self.0.node(p)) || content::is_tall(self.0.node((p.0, p.1 - 1, p.2)))
+    }
+    fn liquid(&self, p: NodePos) -> bool {
+        content::is_liquid(self.0.node(p))
+    }
+    fn opaque(&self, p: NodePos) -> bool {
+        let id = self.0.node(p);
+        content::walkable(id) && content::group_of(id, "leaves") == 0 && !content::passes_light(id)
+    }
+    fn node(&self, p: NodePos) -> u16 {
+        self.0.node(p)
+    }
+    fn top(&self, x: i32, z: i32) -> i32 {
+        self.0.highest_solid(x, z)
+    }
+    fn light(&self, p: NodePos) -> u8 {
+        self.0.torch_light_at(p)
+    }
 }
 
 /// A bucket used or placed: the hotbar slot holding it, what it pointed at,

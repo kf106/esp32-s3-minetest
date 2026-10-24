@@ -605,6 +605,11 @@ pub struct Props<'a> {
     pub damage_texture_modifier: &'a str,
     /// The zoomed view, in degrees (0: no zoom): binoculars.rs.
     pub zoom_fov: f32,
+    /// A sprite's frames: columns and rows of its texture.
+    pub spritediv: [i16; 2],
+    /// Turn to face the way it moves, with this offset in degrees.
+    pub face_movement: Option<f32>,
+    pub use_texture_alpha: bool,
 }
 
 /// AO_CMD_SET_PROPERTIES (ObjectProperties::serialize).
@@ -627,8 +632,8 @@ pub fn properties_message(p: &Props) -> Vec<u8> {
     for t in p.textures {
         w.string16(t);
     }
-    w.i16(1)
-        .i16(1) // spritediv
+    w.i16(p.spritediv[0])
+        .i16(p.spritediv[1]) // spritediv
         .i16(0)
         .i16(0) // initial sprite position
         .u8(1) // is_visible
@@ -638,19 +643,19 @@ pub fn properties_message(p: &Props) -> Vec<u8> {
         .u16(0) // colours
         .u8(p.collide_with_objects as u8)
         .f32(p.stepheight)
-        .u8(0) // automatic_face_movement_dir
-        .f32(0.0) // ... offset
+        .u8(p.face_movement.is_some() as u8) // automatic_face_movement_dir
+        .f32(p.face_movement.unwrap_or(0.0)) // ... offset
         .u8(0) // backface_culling
         .string16("") // nametag (the client uses a player's name)
         .u32(0xFFFF_FFFF) // nametag colour
-        .f32(-1.0) // automatic_face_movement_max_rotation_per_sec
+        .f32(if p.face_movement.is_some() { 360.0 } else { -1.0 }) // automatic_face_movement_max_rotation_per_sec
         .string16(p.infotext)
         .string16(p.wield_item)
         .u8(p.glow as u8)
         .u16(10) // breath_max
         .f32(p.eye_height)
         .f32(p.zoom_fov) // zoom_fov (0 = no zoom)
-        .u8(0) // use_texture_alpha
+        .u8(p.use_texture_alpha as u8) // use_texture_alpha
         // >= 5.3
         .string16(p.damage_texture_modifier)
         .u8(1) // shaded
@@ -706,6 +711,9 @@ pub fn player_properties_message(skin: &str, lying: bool, zoom_fov: f32) -> Vec<
         eye_height, // player_api
         damage_texture_modifier: "^[brighten",
         zoom_fov,
+        spritediv: [1, 1],
+        face_movement: None,
+        use_texture_alpha: false,
     })
 }
 
@@ -776,7 +784,7 @@ pub fn build_hud_set_flags(flags: u32, mask: u32) -> Vec<u8> {
 
 /// AO_CMD_UPDATE_ARMOR_GROUPS as PlayerSAO sends it with damage enabled.
 /// (An "immortal" group would stop the client applying fall damage.)
-fn armor_groups_message() -> Vec<u8> {
+pub fn armor_groups_message() -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_UPDATE_ARMOR_GROUPS).u16(1).string16("fleshy").i16(100);
     w.into_inner()
@@ -785,7 +793,7 @@ fn armor_groups_message() -> Vec<u8> {
 /// AO_CMD_ATTACH_TO with no parent. Required: the client keeps a remote
 /// player's figure hidden (GenericCAO::m_is_visible starts false) until it
 /// processes an attachment message, as UnitSAO always sends one.
-fn not_attached_message() -> Vec<u8> {
+pub fn not_attached_message() -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_ATTACH_TO)
         .i16(0) // parent id: none
@@ -930,6 +938,9 @@ pub fn item_properties_message(init: &ItemInit) -> Vec<u8> {
         eye_height: 1.625,
         damage_texture_modifier: "^[brighten",
         zoom_fov: 0.0,
+        spritediv: [1, 1],
+        face_movement: None,
+        use_texture_alpha: false,
     })
 }
 
@@ -977,6 +988,56 @@ pub fn item_init_data(init: &ItemInit) -> Vec<u8> {
     ];
     w.u8(messages.len() as u8);
     for m in &messages {
+        w.bytes32(m);
+    }
+    w.into_inner()
+}
+
+// ---------------------------------------------------------------------------
+// Mobs (mobs.rs)
+// ---------------------------------------------------------------------------
+
+const AO_CMD_PUNCHED: u8 = 4;
+
+/// AO_CMD_UPDATE_POSITION with an acceleration: the client moves the object
+/// on itself (colliding, if physical) until the next update. BS units, yaw
+/// in degrees.
+pub fn object_position_message(pos_bs: [f32; 3], vel_bs: [f32; 3], acc_bs: [f32; 3], yaw: f32) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_UPDATE_POSITION);
+    for v in pos_bs.into_iter().chain(vel_bs).chain(acc_bs) {
+        w.f32(v);
+    }
+    w.f32(0.0).f32(yaw).f32(0.0); // rotation
+    w.u8(1) // interpolate
+        .u8(0) // not the end of a movement
+        .f32(0.25); // update interval
+    w.into_inner()
+}
+
+/// AO_CMD_PUNCHED: the object's HP after a hit. Clients flash its
+/// damage_texture_modifier, or at 0 make a puff of smoke.
+pub fn punched_message(hp: u16) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_PUNCHED).u16(hp);
+    w.into_inner()
+}
+
+/// GenericCAO initialisation data for a Lua-entity-like object (not a
+/// player), followed by `messages` (properties first).
+pub fn entity_init_data(name: &str, id: u16, pos_bs: [f32; 3], yaw: f32, hp: u16, messages: &[Vec<u8>]) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(1) // version
+        .string16(name)
+        .u8(0) // not a player
+        .u16(id);
+    for v in pos_bs {
+        w.f32(v);
+    }
+    w.f32(0.0).f32(yaw).f32(0.0) // rotation
+        .u16(hp);
+    w.u8(messages.len() as u8);
+    for m in messages {
         w.bytes32(m);
     }
     w.into_inner()
@@ -1148,6 +1209,21 @@ fn play_sound(id: i32, name: &str, gain: f32, pos_bs: [f32; 3], looped: bool) ->
     w.f32(pos_bs[0]).f32(pos_bs[1]).f32(pos_bs[2]);
     w.u16(0) // object
         .u8(looped as u8) // loop
+        .f32(0.0) // fade
+        .f32(1.0) // pitch
+        .u8((id < 0) as u8) // ephemeral
+        .f32(0.0); // start time
+    w.into_inner()
+}
+
+/// TOCLIENT_PLAY_SOUND for a sound that follows an object (a mob): the
+/// client places it where the object is and moves it with it.
+pub fn build_play_sound_object(id: i32, name: &str, gain: f32, pos_bs: [f32; 3], object: u16, looped: bool) -> Vec<u8> {
+    let mut w = Writer::new(TOCLIENT_PLAY_SOUND);
+    w.i32(id).string16(name).f32(gain).u8(2); // SoundLocation::Object
+    w.f32(pos_bs[0]).f32(pos_bs[1]).f32(pos_bs[2]);
+    w.u16(object)
+        .u8(looped as u8)
         .f32(0.0) // fade
         .f32(1.0) // pitch
         .u8((id < 0) as u8) // ephemeral

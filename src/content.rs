@@ -4337,6 +4337,12 @@ pub fn passes_sunlight(id: u16) -> bool {
     id == crate::world::CONTENT_AIR || def(id).is_some_and(|n| matches!(n.kind, Kind::Torch | Kind::Sapling | Kind::Vessel | Kind::Apple | Kind::Mark | Kind::Glass | Kind::Ladder | Kind::Door | Kind::DoorHidden | Kind::Plant | Kind::Seed | Kind::Fence | Kind::Gate | Kind::Stalk | Kind::Stem | Kind::Lamp | Kind::Lily | Kind::Pane | Kind::Post | Kind::Sign | Kind::Mist | Kind::Fire | Kind::Powder))
 }
 
+/// Whether a node's collision box reaches half a node above it (fences,
+/// walls, closed gates): what a mob can't jump over.
+pub fn is_tall(id: u16) -> bool {
+    def(id).is_some_and(|n| matches!(n.kind, Kind::Fence | Kind::Wall)) || crate::fences::gate_of(id).is_some_and(|(_, open)| !open)
+}
+
 /// Whether players stand on a node (and so whether it can hold a torch).
 pub fn walkable(id: u16) -> bool {
     def(id).is_some_and(|n| matches!(n.kind, Kind::Solid | Kind::Leaves | Kind::Furnace | Kind::Chest | Kind::ChestOpen | Kind::Glass | Kind::Shaped | Kind::Door | Kind::Trapdoor | Kind::Bed | Kind::BedTop | Kind::Fence | Kind::Gate | Kind::Stem | Kind::Rooted | Kind::Lamp | Kind::SnowLayer | Kind::Pane | Kind::Bones | Kind::Wall | Kind::Post | Kind::Shelf))
@@ -5103,6 +5109,15 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("env_sounds_water.4.ogg", include_bytes!("../media/env_sounds_water.4.ogg")),
     ("env_sounds_lava.1.ogg", include_bytes!("../media/env_sounds_lava.1.ogg")),
     ("env_sounds_lava.2.ogg", include_bytes!("../media/env_sounds_lava.2.ogg")),
+    // Mobs (mobs.rs).
+    ("mobs_mossling.png", include_bytes!("../media/mobs_mossling.png")),
+    ("mobs_mossling_chatter.1.ogg", include_bytes!("../media/mobs_mossling_chatter.1.ogg")),
+    ("mobs_mossling_chatter.2.ogg", include_bytes!("../media/mobs_mossling_chatter.2.ogg")),
+    ("mobs_mossling_chatter.3.ogg", include_bytes!("../media/mobs_mossling_chatter.3.ogg")),
+    ("mobs_mossling_call.ogg", include_bytes!("../media/mobs_mossling_call.ogg")),
+    ("mobs_mossling_swipe.ogg", include_bytes!("../media/mobs_mossling_swipe.ogg")),
+    ("mobs_mossling_hurt.ogg", include_bytes!("../media/mobs_mossling_hurt.ogg")),
+    ("mobs_mossling_death.ogg", include_bytes!("../media/mobs_mossling_death.ogg")),
 ];
 
 // ---------------------------------------------------------------------------

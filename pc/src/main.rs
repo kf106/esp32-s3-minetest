@@ -71,6 +71,8 @@ mod liquids;
 mod messages;
 #[path = "../../src/meta.rs"]
 mod meta;
+#[path = "../../src/mobs.rs"]
+mod mobs;
 #[path = "../../src/nature.rs"]
 mod nature;
 #[path = "../../src/panes.rs"]

@@ -28,6 +28,7 @@ mod keys;
 mod lcd;
 mod liquids;
 mod messages;
+mod mobs;
 mod meta;
 mod nature;
 mod panes;

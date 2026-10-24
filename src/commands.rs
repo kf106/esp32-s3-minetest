@@ -46,6 +46,7 @@ const COMMANDS: &[Command] = &[
     cmd("kick", "<name> [<reason>]", "Kick a player", &["kick"]),
     cmd("kill", "[<name>]", "Kill player or yourself", &["server"]),
     cmd("me", "<action>", "Show chat action (e.g., '/me orders a pizza' displays '<player name> orders a pizza')", &["shout"]),
+    cmd("mobs", "[on | off | spawn]", "Show whether hostile mobs spawn, or turn them on or off, or bring a pack", &[]),
     cmd("msg", "<name> <message>", "Send a direct message to a player", &["shout"]),
     cmd("privs", "[<name>]", "Show privileges of yourself or another player", &[]),
     cmd("revoke", "<name> (<privilege> [, <privilege2> [<...>]] | all)", "Remove privileges from player", &[]),
@@ -153,6 +154,7 @@ impl Server {
                 });
                 None
             }
+            "mobs" => Some(self.cmd_mobs(name, param)),
             "msg" => Some(self.cmd_msg(name, param)),
             "privs" => {
                 let who = if param.is_empty() { name } else { param };
@@ -570,6 +572,43 @@ impl Server {
     fn moderates(&self, name: &str) -> bool {
         let privs = self.privs_of(name);
         privs.has("server") || privs.has("ban")
+    }
+
+    /// /mobs (ours): whether hostile mobs spawn, and how many there are;
+    /// with "on" or "off" (and the server or ban privilege), turn them on
+    /// or off, kept in the world (off, those about are gone at once); with
+    /// "spawn" (and the server privilege), bring a pack in front of you.
+    fn cmd_mobs(&mut self, caller: &str, param: &str) -> String {
+        let on = match param {
+            "" => {
+                let state = if self.settings.mobs() { "on" } else { "off" };
+                return format!("Mobs are {state}; {} about (at most {}).", self.mobs.len(), crate::mobs::MAX_MOBS);
+            }
+            "on" => true,
+            "off" => false,
+            "spawn" => {
+                if !self.privs_of(caller).has("server") {
+                    return "You don't have permission to run this command (missing privilege: server).".to_string();
+                }
+                if !self.settings.mobs() {
+                    return "Mobs are off (/mobs on).".to_string();
+                }
+                return match self.spawn_mobs_near(caller) {
+                    0 => "There is no room for them in front of you.".to_string(),
+                    n => format!("{n} mosslings come."),
+                };
+            }
+            _ => return "Invalid parameters (see /help mobs).".to_string(),
+        };
+        if !self.moderates(caller) {
+            return "You don't have permission to run this command (missing privilege: server or ban).".to_string();
+        }
+        self.settings.set_mobs(on);
+        if !on {
+            self.clear_mobs();
+        }
+        info!("{caller} turns mobs {param}");
+        format!("Mobs are now {param}.")
     }
 
     /// /tnt (ours: minetest_game has the enable_tnt setting): whether TNT

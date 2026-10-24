@@ -4,7 +4,7 @@ What the server does, as of now. It covers most of Minetest Game (29 of its 34 m
 
 ![In game, connected to the ESP32 server](../assets/screen-002.png)
 
-Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and farming](#trees-plants-and-farming), [Players](#players), [Crafting and smelting](#crafting-and-smelting), [Building](#building), [Tools and items](#tools-and-items), [The board](#the-board).
+Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and farming](#trees-plants-and-farming), [Players](#players), [Crafting and smelting](#crafting-and-smelting), [Building](#building), [Tools and items](#tools-and-items), [Mobs](#mobs), [The board](#the-board).
 
 ## The server
 
@@ -139,6 +139,16 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 - **Paper, books and bookshelves:** three papyrus in a row make paper, three paper in a column a book, and three books between two rows of planks a bookshelf. A bookshelf holds 16 books (and nothing else), shows how many it holds when pointed at, and can only be dug when empty. It burns for 30 s.
 - **Writing in books:** use a book (left-click with it in hand) to write a title and up to 10,000 characters in it; saved, it becomes a book with text, which shows its title and author in the inventory. Its author can go on editing it or read it; anyone else reads it, 14 lines a page. Saving a book with no title and no text leaves it an empty book (or makes it one again), where Minetest Game would keep a book with text titled "". A book with text and an empty book crafted together make a copy, and the original stays in the grid. What is written is kept in the item itself (Luanti's item metadata), so it goes wherever the book goes: chests, bookshelves, bones, dropped on the ground, other players.
 
+## Mobs
+
+Not part of Minetest Game, which has none, so they are off unless an admin or moderator turns them on: `/mobs on` (with `server` or `ban`), kept in `world/settings.txt` as `enable_mobs`. `/mobs off` turns them off again, and those about are gone at once; `/mobs` says which it is and how many there are. Our own, made to bring back the tension of a first night: darkness is dangerous, and shelter matters.
+
+- **Mosslings:** squat creatures of bark and moss with glowing eyes, a little under a node tall, so they squeeze through one-node gaps (but not past a closed door, a fence or a half-slab gap). They come in packs of two or three at night, out of the dark near trees, 24 to 48 nodes from a player, where torch light is 7 or less and there are two nodes of air above the ground. They chatter, and call when they see a player (from about 16 nodes, if nothing solid is in the way: they see through leaves); then the pack comes, the others flanking, to the sides of the one in front. Each swipe takes 2 HP (a heart) and pushes the player back, every 1.5 s. A mossling alone is weak: 10 HP, so two blows of a steel sword, five of a wooden one. One badly hurt with its pack gone runs. They jump up a node but won't walk off a drop of more than three nodes, or into water, and don't follow a player further than 24 nodes, or out of sight for 5 s. At dawn they sink back into the earth. Killed, a mossling leaves 1 to 3 sticks.
+- **How many:** no more than 8 near a player and 16 in all on the board (12 and 64 on a PC). They go when no player is within 80 nodes, and aren't kept over a restart.
+- **Hitting them:** as Luanti hits an entity: the tool's damage, less for a blow sooner than its full punch interval after the last, wearing the tool. They flash red when hit, and puff away at 0 HP.
+- **Bringing a pack:** `/mobs spawn` (with `server`) brings three a few nodes in front of you, day or night, for trying them out (at day they soon sink).
+- **Sounds:** placeholders for now, made in Python (`tools/make_mob_sounds.py`).
+
 ## The board
 
 - **Status light:** the board's RGB LED shows what is happening, whether the screen is on or off. It never goes above 60% of full power.
@@ -165,7 +175,8 @@ Five of Minetest Game's 34 mods are still to come:
 
 Smaller gaps in what is here:
 
-- **Particles:** none are sent, so there is no smoke or debris from TNT, and no puff when a dropped item burns.
+- **More mobs:** the Wisp (a drifting flame that bursts into fire) and the Hexer (a caster that lobs slow hex orbs) are to come after the Mossling.
+- **Particles:** none are sent, so there is no smoke or debris from TNT, no puff when a dropped item burns, and no puff of soil as a mossling sinks.
 - **Lit TNT doesn't fall** if what is under it goes.
 - **Dirt with savanna grass** (Minetest Game's dirt_with_dry_grass) isn't there, so savanna grass on ordinary dirt doesn't spread.
 - **Untouched ground:** grass under a generated tree's trunk doesn't die back, and generated deep lava lights nothing; the server only looks at ground players have changed, to save the board's time.
