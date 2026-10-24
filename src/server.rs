@@ -3083,13 +3083,15 @@ impl Server {
     }
 
     /// A basic flame's timer: with nothing flammable beside it, it goes
-    /// out; otherwise it looks again later.
+    /// out; otherwise it looks again later. While fire is off it goes out
+    /// regardless (minetest_game's would burn on beside leaves or wood for
+    /// ever, never spreading).
     fn check_flame(&mut self, pos: NodePos) {
         if self.world.node(pos) != fire::BASIC_FLAME {
             self.flames.remove(&pos);
             return;
         }
-        if self.flammable_near(pos).is_some() {
+        if self.settings.fire() && self.flammable_near(pos).is_some() {
             self.timers.start(pos, Job::Flame, fire::flame_timer(&mut self.rng));
         } else {
             self.put_out(pos);

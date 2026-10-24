@@ -91,8 +91,11 @@ say(c, "/fire off"); assert any("now off" in x for x in heard(c, "now off"))
 go(c, X - 2, 3, Z - 3)
 place(c, 1, (X - 4, 2, Z - 3), (X - 4, 3, Z - 3))
 c.cmds.clear(); interact(c, 4, 0, (X - 4, 3, Z - 3), (X - 4, 4, Z - 3)); watch(c, 4)
-assert nodes[(X - 4, 4, Z - 3)][0] == FLAME and nodes[(X - 4, 3, Z - 3)][0] == WOOD, "burnt with fire off"
-print("fire off: the flame burns, the plank stays")
+lit_off = [p for p, i, s in added if p == (X - 4, 4, Z - 3) and i == FLAME]
+assert lit_off and nodes[(X - 4, 3, Z - 3)][0] == WOOD, "not lit, or burnt, with fire off"
+# ... and the flame goes out at its timer, though the plank is beside it.
+assert nodes[(X - 4, 4, Z - 3)] == (126, 0), nodes[(X - 4, 4, Z - 3)]
+print("fire off: the flame lights and goes out, the plank stays")
 say(c, "/fire on"); heard(c, "now on")
 # A coal block's permanent flame, which goes when the block is dug.
 go(c, X + 1, 3, Z - 2)
