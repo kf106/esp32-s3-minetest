@@ -5118,6 +5118,10 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("mobs_mossling_swipe.ogg", include_bytes!("../media/mobs_mossling_swipe.ogg")),
     ("mobs_mossling_hurt.ogg", include_bytes!("../media/mobs_mossling_hurt.ogg")),
     ("mobs_mossling_death.ogg", include_bytes!("../media/mobs_mossling_death.ogg")),
+    ("mobs_wisp.png", include_bytes!("../media/mobs_wisp.png")),
+    ("mobs_wisp_hum.ogg", include_bytes!("../media/mobs_wisp_hum.ogg")),
+    ("mobs_wisp_whine.ogg", include_bytes!("../media/mobs_wisp_whine.ogg")),
+    ("mobs_wisp_fizzle.ogg", include_bytes!("../media/mobs_wisp_fizzle.ogg")),
 ];
 
 // ---------------------------------------------------------------------------

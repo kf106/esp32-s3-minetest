@@ -33,7 +33,7 @@ src/env_sounds.rs  running water and lava sounds near players
 src/fire.rs        fire: flames, flint and steel, spreading
 src/tnt.rs         TNT and gunpowder, and blasts
 src/settings.rs    the world's settings: fire, TNT and mobs on or off
-src/mobs.rs        hostile mobs: the Mossling
+src/mobs.rs        hostile mobs: the Mossling and the Wisp
 src/farming.rs     farming: soil, seeds, crops, hoes
 src/beds.rs        beds, sleeping and respawn points
 src/fences.rs      fences, fence rails, fence gates and walls

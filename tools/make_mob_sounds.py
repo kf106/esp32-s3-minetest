@@ -4,7 +4,9 @@
 """Makes the mobs' placeholder sounds (media/mobs_*.ogg): mono Ogg Vorbis
 at 22.05 kHz, drawn from noise and tones. Needs numpy and ffmpeg.
 
-    python3 tools/make_mob_sounds.py
+    python3 tools/make_mob_sounds.py           the mossling's (not its call)
+    python3 tools/make_mob_sounds.py --call    and its call
+    python3 tools/make_mob_sounds.py --wisp    the wisp's
 """
 import os
 import subprocess
@@ -146,6 +148,57 @@ def death():
     return v + crackle + rustle(n, 0.25) * x
 
 
+def seamless(x, fade=0.15):
+    """Crossfade a loop's end into its start, so it loops without a click."""
+    k = int(fade * RATE)
+    head, tail = x[:k].copy(), x[-k:].copy()
+    ramp = np.linspace(0, 1, k)
+    x = x[:-k].copy()
+    x[:k] = head * ramp + tail * (1 - ramp)
+    return x
+
+
+def flame(n, brightness=0.35):
+    """A soft roar of flame: low noise, gently fluttering."""
+    w = lowpass(rng.standard_normal(n), brightness * 0.3) * 3
+    flutter = 0.6 + 0.4 * np.abs(lowpass(rng.standard_normal(n), 0.002)) * 8
+    return w * np.clip(flutter, 0, 1.6)
+
+
+def wisp_hum():
+    """The wisp's hum (looped): a breathy, wavering tone over a soft flame,
+    a little eerie."""
+    n = len(t(2.15))
+    x = np.arange(n) / RATE
+    f = 155 + 6 * np.sin(2 * np.pi * 0.5 * x) + 3 * np.sin(2 * np.pi * 3 * x)
+    v = tone(f, (1.0, 0.25, 0.35, 0.1), vibrato=0.01, vib_rate=5)
+    shimmer = tone(f * 2.01, (0.3, 0.1)) * (0.5 + 0.5 * np.sin(2 * np.pi * 1.5 * x))
+    return seamless(v * 0.5 + shimmer * 0.25 + flame(n) * 0.5)
+
+
+def wisp_whine():
+    """The fuse: 1.5 s, rising in pitch and loudness, flickering faster,
+    crackling more, to the burst."""
+    n = len(t(1.5))
+    x = np.linspace(0, 1, n)
+    f = 260 * (1 + 3.2 * x ** 1.6)
+    flicker_rate = 6 + 30 * x
+    flicker = 0.65 + 0.35 * np.sin(2 * np.pi * np.cumsum(flicker_rate) / RATE)
+    v = tone(f, (1.0, 0.5, 0.3, 0.2), vibrato=0.02, vib_rate=11) * flicker
+    crackle = sum(snap(n, a, 0.3 + 0.5 * a / 1.5) for a in np.sort(rng.uniform(0.1, 1.45, 14)))
+    return (v * 0.6 + flame(n, 0.6) * 0.3 + crackle) * (0.3 + 0.7 * x) * env(n, 0.05, 0.02)
+
+
+def wisp_fizzle():
+    """Put out: a hiss falling away, with a fading wobble of the hum."""
+    n = len(t(0.7))
+    x = np.linspace(0, 1, n)
+    hiss = (rng.standard_normal(n) - lowpass(rng.standard_normal(n), 0.2)) * np.exp(-4 * x)
+    f = 300 * (1 - 0.6 * x)
+    v = tone(f, (1.0, 0.3)) * np.exp(-5 * x)
+    return hiss * 0.5 + v * 0.4 + snap(n, 0.0, 0.5)
+
+
 def save(name, samples):
     samples = samples / max(1e-6, np.max(np.abs(samples))) * 0.85
     pcm = (samples * 32767).astype("<i2")
@@ -162,6 +215,12 @@ def save(name, samples):
 
 
 if __name__ == "__main__":
+    import sys
+    if "--wisp" in sys.argv:
+        save("mobs_wisp_hum.ogg", wisp_hum())
+        save("mobs_wisp_whine.ogg", wisp_whine())
+        save("mobs_wisp_fizzle.ogg", wisp_fizzle())
+        sys.exit()
     for i in (1, 2, 3):
         save(f"mobs_mossling_chatter.{i}.ogg", chatter(100 + i))
     # The call is kept as first made (liked as it is); remake it with

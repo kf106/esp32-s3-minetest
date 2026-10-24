@@ -501,6 +501,10 @@ pub struct Server {
     /// Hostile mobs (mobs.rs), when on; when spawning was last tried.
     mobs: Mobs,
     mobs_spawned: Instant,
+    /// The looping hum of each wisp, and the whine of its fuse while lit
+    /// (sound ids), and when a wisp last blasted nodes.
+    mob_sounds: HashMap<u16, (i32, i32)>,
+    mob_blasted: Option<Instant>,
     /// Sand and gravel on their way down (falling.rs).
     falling: Vec<Falling>,
     /// When the furnaces' timers last ran.
@@ -934,6 +938,8 @@ impl Server {
             items_stepped: Instant::now(),
             mobs: Mobs::new(),
             mobs_spawned: Instant::now(),
+            mob_sounds: HashMap::new(),
+            mob_blasted: None,
             falling: Vec::new(),
             furnaces_stepped: Instant::now(),
             bones_checked: Instant::now(),
@@ -1814,14 +1820,21 @@ impl Server {
         for d in self.items.iter() {
             for_new.push((d.id, item_init(d)));
         }
+        let mut hums = Vec::new();
         for m in self.mobs.iter() {
             for_new.push((m.id, mobs::init_data(m)));
+            if let Some(&(hum, _)) = self.mob_sounds.get(&m.id) {
+                hums.push(build_play_sound_object(hum, m.def().hum, mobs::HUM_GAIN, m.pos_bs(), m.id, true));
+            }
         }
         info!(
             "Adding player object {new_id}; {} other player(s) online",
             others.len()
         );
         self.send_command(new, 0, &build_remove_add(&[], &for_new));
+        for hum in hums {
+            self.send_command(new, 0, &hum);
+        }
         let announce = build_remove_add(&[], &[(new_id, new_init)]);
         for addr in others {
             self.send_command(addr, 0, &announce);
@@ -3454,7 +3467,6 @@ impl Server {
     /// sand and gravel above come down; players near are hurt and thrown
     /// back, and items thrown.
     fn explode(&mut self, center: NodePos) {
-        let started = Instant::now();
         let mut count = 0;
         for dz in -2..=2 {
             for dy in -2..=2 {
@@ -3468,6 +3480,16 @@ impl Server {
             }
         }
         let radius = tnt::blast_radius(count);
+        self.blast(center, radius, 2, &format!("TNT exploded at {center:?} ({count} together, radius {radius})"), "blown up");
+    }
+
+    /// A blast of `radius` at `center` (TNT's, or a wisp's): what is in it
+    /// is destroyed (and thrown out), set alight, lit or set off in turn;
+    /// sand and gravel above come down; players and mobs near are hurt
+    /// (`death` says how a player died) and thrown back, and items thrown.
+    /// The TNT within `middle` nodes went with it.
+    fn blast(&mut self, center: NodePos, radius: i32, middle: i32, what: &str, death: &str) {
+        let started = Instant::now();
         let mut drops: Vec<Stack> = Vec::new();
         let mut chained = Vec::new();
         let mut powder = Vec::new();
@@ -3557,9 +3579,9 @@ impl Server {
             }
         }
         // TNT round the middle went with it.
-        for dz in -2..=2 {
-            for dy in -2..=2 {
-                for dx in -2..=2 {
+        for dz in -middle..=middle {
+            for dy in -middle..=middle {
+                for dx in -middle..=middle {
                     changed.push((center.0 + dx, center.1 + dy, center.2 + dz));
                 }
             }
@@ -3597,18 +3619,18 @@ impl Server {
         for p in powder {
             self.light_tnt(p);
         }
-        self.blast_physics(center, radius);
+        self.blast_physics(center, radius, death);
         self.eject(center, radius, drops);
         info!(
-            "TNT exploded at {center:?} ({count} together, radius {radius}): {} nodes, worked out in {worked_out} ms, {} ms in all",
+            "{what}: {} nodes, worked out in {worked_out} ms, {} ms in all",
             changed.len(),
             started.elapsed().as_millis()
         );
     }
 
-    /// A blast's push (entity_physics): players within its damage radius
-    /// lose HP and are thrown back; dropped items are thrown.
-    fn blast_physics(&mut self, center: NodePos, radius: i32) {
+    /// A blast's push (entity_physics): players and mobs within its damage
+    /// radius lose HP and are thrown back; dropped items are thrown.
+    fn blast_physics(&mut self, center: NodePos, radius: i32, death: &str) {
         let c = [center.0 as f32, center.1 as f32, center.2 as f32];
         let reach = tnt::damage_radius(radius);
         let away = |p: [f32; 3]| {
@@ -3630,7 +3652,14 @@ impl Server {
             self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
             let damage = tnt::damage(dist, radius).round() as u16;
             if damage > 0 {
-                self.hurt(addr, damage, "blown up");
+                self.hurt(addr, damage, death);
+            }
+        }
+        let mobs: Vec<(u16, f32)> = self.mobs.iter().map(|m| (m.id, away(m.pos).0)).filter(|m| m.1 <= reach).collect();
+        for (id, dist) in mobs {
+            let damage = tnt::damage(dist, radius).round() as u16;
+            if let Some(hit) = self.mobs.harm(id, None, c, damage.max(1)) {
+                self.mob_hit(id, hit);
             }
         }
         let items: Vec<(u16, f32, [f32; 3], [f32; 3])> =
@@ -4862,7 +4891,10 @@ impl Server {
                         added.push((id, mobs::init_data(m)));
                     }
                 }
-                Event::Removed(id) => removed.push(id),
+                Event::Removed(id) => {
+                    removed.push(id);
+                    self.stop_mob_sounds(id);
+                }
                 Event::Moved(id) => {
                     if let Some(m) = self.mobs.get(id) {
                         messages.push((id, mobs::position(m)));
@@ -4870,17 +4902,31 @@ impl Server {
                 }
                 Event::Animated(id) => {
                     if let Some(m) = self.mobs.get(id) {
-                        messages.push((id, set_animation_message(mobs::animation(m.anim))));
+                        messages.push((id, mobs::animation_message(m)));
                     }
                 }
                 Event::Sinking(id) => {
                     if let Some(m) = self.mobs.get(id) {
                         messages.push((id, mobs::properties(m, false)));
-                        messages.push((id, set_animation_message(mobs::animation(mobs::Anim::Stand))));
+                        messages.push((id, mobs::animation_message(m)));
+                        if m.def().flies {
+                            // A wisp fades as it rises.
+                            messages.push((id, texture_mod_message("^[opacity:110")));
+                        }
                         messages.push((id, mobs::position(m)));
                     }
+                    if let Some(hum) = self.mob_sounds.get_mut(&id).map(|s| std::mem::take(&mut s.0)) {
+                        if hum != 0 {
+                            self.send_to_players(&build_fade_sound(hum, -0.5, 0.0));
+                        }
+                    }
                 }
-                Event::Sound(id, sound, gain, range) => self.mob_sound(id, sound, gain, range),
+                Event::Sound(id, sound, gain, range, pos) => self.mob_sound(id, sound, gain, range, pos),
+                Event::Fuse(id, lit) => self.mob_fuse(id, lit),
+                Event::Burst { mob, pos, radius } => {
+                    let kills = self.mobs.get(mob).map_or("was burnt up by a wisp", |m| m.def().kills);
+                    self.mob_burst(pos, radius, kills);
+                }
                 Event::Hit { mob, player, damage, push } => {
                     let kills = self.mobs.get(mob).map_or("was killed", |m| m.def().kills);
                     let Some(addr) = self.peers.iter().find(|(_, p)| p.id == player && p.ready).map(|(a, _)| *a) else {
@@ -4894,16 +4940,31 @@ impl Server {
         if !added.is_empty() || !removed.is_empty() {
             self.send_to_players(&build_remove_add(&removed, &added));
         }
+        // New wisps hum, as long as they are about.
+        for (id, _) in &added {
+            let Some(m) = self.mobs.get(*id) else {
+                continue;
+            };
+            let (sound, pos_bs) = (m.def().hum, m.pos_bs());
+            if sound.is_empty() {
+                continue;
+            }
+            let hum = self.new_sound_id();
+            self.mob_sounds.insert(*id, (hum, 0));
+            self.send_to_players(&build_play_sound_object(hum, sound, mobs::HUM_GAIN, pos_bs, *id, true));
+        }
         if !messages.is_empty() {
             self.send_to_players(&build_object_messages(&messages));
         }
     }
 
-    /// A sound from a mob, following it, for players within `range`.
-    fn mob_sound(&mut self, id: u16, sound: &str, gain: f32, range: f32) {
-        let Some(pos_bs) = self.mobs.get(id).map(|m| m.pos_bs()) else {
+    /// A sound from a mob, following it (or at `pos`, nodes, where it
+    /// was), for players within `range`.
+    fn mob_sound(&mut self, id: u16, sound: &str, gain: f32, range: f32, pos: [f32; 3]) {
+        if sound.is_empty() {
             return;
-        };
+        }
+        let pos_bs = self.mobs.get(id).map_or(pos.map(|v| v * 10.0), |m| m.pos_bs());
         let packet = build_play_sound_object(-1, sound, gain, pos_bs, id, false);
         let reach = range * 10.0;
         let near: Vec<SocketAddr> = self
@@ -4956,25 +5017,95 @@ impl Server {
             return;
         };
         let d = mobs::def(hit.kind);
+        if self.mob_hit(id, hit) {
+            if let Some(name) = self.peers.get(&from).map(|p| p.display_name().to_string()) {
+                info!("{name} killed a {}", d.description);
+            }
+        }
+    }
+
+    /// Tell clients a mob was hit: its HP, and where it is thrown; or,
+    /// dead, it is gone and leaves its drops. Returns whether it died.
+    fn mob_hit(&mut self, id: u16, hit: mobs::Punched) -> bool {
+        let d = mobs::def(hit.kind);
         self.send_to_players(&build_object_messages(&[(id, punched_message(hit.hp))]));
         if hit.hp > 0 {
-            self.mob_sound(id, d.hurt, 0.8, 16.0);
+            self.mob_sound(id, d.hurt, 0.8, 16.0, hit.pos);
             if let Some(m) = self.mobs.get(id) {
                 let msg = build_object_messages(&[(id, mobs::position(m))]);
                 self.send_to_players(&msg);
             }
-            return;
+            return false;
         }
         let at = hit.pos.map(|v| v * 10.0);
         self.play_sound_near(-1, d.death, 0.8, at, 16.0);
         self.send_to_players(&build_remove_add(&[id], &[]));
+        self.stop_mob_sounds(id);
         let (item, lo, hi) = d.drops;
         let count = self.rng.range(lo, hi) as u16;
         let drop_at = [hit.pos[0], hit.pos[1] + 0.5, hit.pos[2]];
         let vel = [(self.rng.range(0, 20) as f32 - 10.0) / 10.0, 2.0, (self.rng.range(0, 20) as f32 - 10.0) / 10.0];
         self.spawn_item(Stack::new(item, count), (drop_at, vel));
-        if let Some(name) = self.peers.get(&from).map(|p| p.display_name().to_string()) {
-            info!("{name} killed a {}", d.description);
+        true
+    }
+
+    fn new_sound_id(&mut self) -> i32 {
+        let id = self.next_sound_id;
+        self.next_sound_id = if id == i32::MAX { 1 } else { id + 1 };
+        id
+    }
+
+    /// A mob has gone: its hum and whine stop.
+    fn stop_mob_sounds(&mut self, id: u16) {
+        if let Some((hum, whine)) = self.mob_sounds.remove(&id) {
+            for s in [hum, whine] {
+                if s != 0 {
+                    self.send_to_players(&build_stop_sound(s));
+                }
+            }
+        }
+    }
+
+    /// A wisp's fuse is lit: the whine (as long as the fuse) starts; or
+    /// put out: it stops.
+    fn mob_fuse(&mut self, id: u16, lit: bool) {
+        let old = self.mob_sounds.get_mut(&id).map_or(0, |s| std::mem::take(&mut s.1));
+        if old != 0 {
+            self.send_to_players(&build_stop_sound(old));
+        }
+        if !lit {
+            return;
+        }
+        let Some((sound, pos_bs)) = self.mobs.get(id).map(|m| (m.def().whine, m.pos_bs())) else {
+            return;
+        };
+        let whine = self.new_sound_id();
+        self.mob_sounds.entry(id).or_insert((0, 0)).1 = whine;
+        let packet = build_play_sound_object(whine, sound, 1.0, pos_bs, id, false);
+        let near: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.ready && (0..3).map(|i| (p.pos_bs[i] - pos_bs[i]).powi(2)).sum::<f32>() <= 320.0 * 320.0)
+            .map(|(a, _)| *a)
+            .collect();
+        for addr in near {
+            self.send_command(addr, 0, &packet);
+        }
+    }
+
+    /// A wisp bursts: a small blast, like TNT's. With TNT off, or another
+    /// wisp's blast less than a second ago (for the board's sake), it
+    /// only hurts and throws.
+    fn mob_burst(&mut self, pos: [f32; 3], radius: i32, kills: &str) {
+        let center = ((pos[0]).round() as i32, (pos[1]).round() as i32, (pos[2]).round() as i32);
+        let recent = self.mob_blasted.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
+        if self.settings.tnt() && !recent {
+            self.mob_blasted = Some(Instant::now());
+            self.blast(center, radius, 0, &format!("A wisp burst at {center:?}"), kills);
+        } else {
+            let at = pos.map(|v| v * 10.0);
+            self.play_sound_near(-1, "tnt_explode", 1.5, at, 64.0);
+            self.blast_physics(center, radius, kills);
         }
     }
 
@@ -4987,14 +5118,14 @@ impl Server {
     }
 
     /// A pack in front of a player (/mobs spawn). Returns how many came.
-    fn spawn_mobs_near(&mut self, name: &str) -> usize {
+    fn spawn_mobs_near(&mut self, name: &str, kind: mobs::Kind) -> usize {
         let Some(peer) = self.peers.values().find(|p| p.ready && p.display_name() == name) else {
             return 0;
         };
         let (pos, yaw) = (peer.pos_bs.map(|v| v / 10.0), peer.yaw.to_radians());
         let dir = [-yaw.sin(), yaw.cos()];
         let terrain = MobTerrain(&self.world);
-        let events = self.mobs.spawn_near(&terrain, pos, dir, &mut self.rng);
+        let events = self.mobs.spawn_near(kind, &terrain, pos, dir, &mut self.rng);
         let count = events.len();
         self.mob_events(events);
         count

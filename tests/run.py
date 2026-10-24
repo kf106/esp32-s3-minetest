@@ -44,6 +44,7 @@ NETWORK = [
     ("fire", {"LUANTI_FIRE_FAST": "1"}, [], False),
     ("tnt", {}, [], False),
     ("mobs", {}, [], True),
+    ("wisp", {}, [], True),
     ("door", {}, [], False),
     ("falling", {}, [], False),
     ("chest", {}, [], False),

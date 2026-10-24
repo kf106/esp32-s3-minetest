@@ -997,6 +997,7 @@ pub fn item_init_data(init: &ItemInit) -> Vec<u8> {
 // Mobs (mobs.rs)
 // ---------------------------------------------------------------------------
 
+const AO_CMD_SET_SPRITE: u8 = 3;
 const AO_CMD_PUNCHED: u8 = 4;
 
 /// AO_CMD_UPDATE_POSITION with an acceleration: the client moves the object
@@ -1020,6 +1021,22 @@ pub fn object_position_message(pos_bs: [f32; 3], vel_bs: [f32; 3], acc_bs: [f32;
 pub fn punched_message(hp: u16) -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_PUNCHED).u16(hp);
+    w.into_inner()
+}
+
+/// AO_CMD_SET_SPRITE: show `frames` frames of a sprite from `start` (a
+/// column and row of its spritediv), each for `frame_length` seconds, over
+/// and over (the frames go down the texture).
+pub fn set_sprite_message(start: [i16; 2], frames: u16, frame_length: f32) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_SET_SPRITE).i16(start[0]).i16(start[1]).u16(frames).f32(frame_length).u8(0);
+    w.into_inner()
+}
+
+/// AO_CMD_SET_TEXTURE_MOD: a modifier added to the object's textures.
+pub fn texture_mod_message(modifier: &str) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_SET_TEXTURE_MOD).string16(modifier);
     w.into_inner()
 }
 
