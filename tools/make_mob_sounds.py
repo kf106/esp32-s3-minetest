@@ -7,6 +7,7 @@ at 22.05 kHz, drawn from noise and tones. Needs numpy and ffmpeg.
     python3 tools/make_mob_sounds.py           the mossling's (not its call)
     python3 tools/make_mob_sounds.py --call    and its call
     python3 tools/make_mob_sounds.py --wisp    the wisp's
+    python3 tools/make_mob_sounds.py --hexer   the hexer's
 """
 import os
 import subprocess
@@ -199,6 +200,122 @@ def wisp_fizzle():
     return hiss * 0.5 + v * 0.4 + snap(n, 0.0, 0.5)
 
 
+def resonate(x, freqs, q=8.0):
+    """A band-pass resonator whose centre follows `freqs` (one per sample):
+    shapes noise into vowel-like whispers."""
+    y = np.zeros_like(x)
+    y1 = y2 = 0.0
+    for i in range(len(x)):
+        w = 2 * np.pi * freqs[i] / RATE
+        r = 1 - w / (2 * q)
+        a1, a2 = 2 * r * np.cos(w), -r * r
+        v = x[i] * (1 - r) + a1 * y1 + a2 * y2
+        y2, y1 = y1, v
+        y[i] = v
+    return y
+
+
+def whisper(secs, seed, base=1.0):
+    """Breathy, wordless whispering: syllables of noise through two moving
+    formants, the vowels changing at random."""
+    r = np.random.default_rng(seed)
+    n = len(t(secs))
+    w = r.standard_normal(n)
+    f1, f2, amp = np.zeros(n), np.zeros(n), np.zeros(n)
+    i = 0
+    while i < n:
+        m = int(r.uniform(0.08, 0.2) * RATE)
+        j = min(n, i + m)
+        f1[i:j] = np.linspace(r.uniform(300, 800), r.uniform(300, 800), j - i) * base
+        f2[i:j] = np.linspace(r.uniform(900, 2400), r.uniform(900, 2400), j - i) * base
+        amp[i:j] = np.sin(np.linspace(0, np.pi, j - i)) ** 0.7 * (0 if r.random() < 0.15 else 1)
+        i = j + int(r.uniform(0.0, 0.05) * RATE)
+    f1, f2 = lowpass(f1, 0.01), lowpass(f2, 0.01)
+    v = resonate(w, f1, 6) * 0.8 + resonate(w, f2, 9) * 0.5
+    hiss = (w - lowpass(w, 0.5)) * 0.15
+    return (v + hiss) * lowpass(amp, 0.01)
+
+
+def drone(n, f0, rise=1.0):
+    """A low, dark drone, its pitch moving from f0 to f0 * rise."""
+    f = np.linspace(f0, f0 * rise, n)
+    return tone(f, (1.0, 0.6, 0.5, 0.35, 0.3, 0.2), vibrato=0.01, vib_rate=4)
+
+
+def hexer_mutter(seed):
+    n = len(t(1.8))
+    return whisper(1.8, seed, 0.8) * env(n, 0.1, 0.3) + drone(n, 55) * 0.06 * env(n, 0.3, 0.5)
+
+
+def hexer_hiss():
+    n = len(t(0.9))
+    x = np.linspace(0, 1, n)
+    w = rng.standard_normal(n)
+    hiss = resonate(w, np.linspace(2600, 3600, n), 3) * np.sin(np.pi * x ** 0.6) ** 2
+    return hiss * 1.2 + growl(drone(n, 70, 0.8), 0.6, 25) * 0.2 * env(n, 0.1, 0.3)
+
+
+def hexer_cast():
+    """Drawing the life in: a dark swell, rushing in, rising, ending in a
+    soft release."""
+    n = len(t(0.8))
+    x = np.linspace(0, 1, n)
+    rush = resonate(rng.standard_normal(n), 300 + 1800 * x ** 2, 2.5) * x ** 2
+    d = drone(n, 65, 2.2) * x ** 1.5
+    return rush * 0.9 + d * 0.35 + snap(n, 0.76, 0.6)
+
+
+def hexer_orb():
+    """An orb in flight (looped): a low pulsing throb, sizzling."""
+    n = len(t(1.2))
+    x = np.arange(n) / RATE
+    pulse = 0.6 + 0.4 * np.sin(2 * np.pi * 5 * x)
+    d = tone(np.full(n, 95.0), (1.0, 0.5, 0.4, 0.25)) * pulse
+    sizzle = (rng.standard_normal(n) - lowpass(rng.standard_normal(n), 0.3)) * 0.12
+    return seamless(d * 0.5 + sizzle + flame(n, 0.4) * 0.3, 0.1)
+
+
+def hexer_impact():
+    n = len(t(0.7))
+    x = np.linspace(0, 1, n)
+    thump = tone(np.linspace(110, 45, n), (1.0, 0.5)) * np.exp(-9 * x)
+    sizzle = (rng.standard_normal(n) - lowpass(rng.standard_normal(n), 0.25)) * np.exp(-4 * x) * 0.5
+    crackle = sum(snap(n, a, 0.4) for a in rng.uniform(0.05, 0.5, 6))
+    return thump * 0.9 + sizzle + crackle
+
+
+def hexer_blink():
+    """Folding out of the air: a quick sucked-in whoosh and a pop."""
+    n = len(t(0.35))
+    x = np.linspace(0, 1, n)
+    whoosh = resonate(rng.standard_normal(n), 2400 * (1 - x) + 200, 2.5) * np.sin(np.pi * x) ** 2
+    return whoosh * 1.1 + snap(n, 0.3, 0.8)
+
+
+def hexer_hurt():
+    n = len(t(0.4))
+    w = rng.standard_normal(n)
+    rasp = growl(resonate(w, np.linspace(900, 600, n), 4), 0.7, 45)
+    return rasp * env(n, 0.01, 0.2) * 1.2 + drone(n, 90, 0.7) * 0.15 * env(n, 0.01, 0.2)
+
+
+def hexer_death():
+    """A long rattling breath out, falling, the whisper dying away."""
+    n = len(t(1.6))
+    x = np.linspace(0, 1, n)
+    w = rng.standard_normal(n)
+    breath = growl(resonate(w, 1400 * (1 - 0.6 * x), 3), 0.5 + 0.4 * x, 18) * (1 - x) ** 1.2
+    return breath * 1.1 + drone(n, 80, 0.5) * 0.25 * (1 - x) + whisper(1.6, 9, 0.6) * 0.3 * (1 - x)
+
+
+def hexer_vanish():
+    """Gone in smoke: a soft rush of air falling away, a last whisper."""
+    n = len(t(0.9))
+    x = np.linspace(0, 1, n)
+    rush = resonate(rng.standard_normal(n), 1600 * (1 - x) + 300, 2) * np.sin(np.pi * x ** 0.5) * (1 - x)
+    return rush * 1.2 + whisper(0.9, 12, 1.1) * 0.25 * (1 - x)
+
+
 def save(name, samples):
     samples = samples / max(1e-6, np.max(np.abs(samples))) * 0.85
     pcm = (samples * 32767).astype("<i2")
@@ -216,6 +333,18 @@ def save(name, samples):
 
 if __name__ == "__main__":
     import sys
+    if "--hexer" in sys.argv:
+        for i in (1, 2):
+            save(f"mobs_hexer_mutter.{i}.ogg", hexer_mutter(200 + i))
+        save("mobs_hexer_hiss.ogg", hexer_hiss())
+        save("mobs_hexer_cast.ogg", hexer_cast())
+        save("mobs_hexer_orb.ogg", hexer_orb())
+        save("mobs_hexer_impact.ogg", hexer_impact())
+        save("mobs_hexer_blink.ogg", hexer_blink())
+        save("mobs_hexer_hurt.ogg", hexer_hurt())
+        save("mobs_hexer_death.ogg", hexer_death())
+        save("mobs_hexer_vanish.ogg", hexer_vanish())
+        sys.exit()
     if "--wisp" in sys.argv:
         save("mobs_wisp_hum.ogg", wisp_hum())
         save("mobs_wisp_whine.ogg", wisp_whine())

@@ -5122,6 +5122,18 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("mobs_wisp_hum.ogg", include_bytes!("../media/mobs_wisp_hum.ogg")),
     ("mobs_wisp_whine.ogg", include_bytes!("../media/mobs_wisp_whine.ogg")),
     ("mobs_wisp_fizzle.ogg", include_bytes!("../media/mobs_wisp_fizzle.ogg")),
+    ("mobs_hexer.png", include_bytes!("../media/mobs_hexer.png")),
+    ("mobs_hexer_orb.png", include_bytes!("../media/mobs_hexer_orb.png")),
+    ("mobs_hexer_mutter.1.ogg", include_bytes!("../media/mobs_hexer_mutter.1.ogg")),
+    ("mobs_hexer_mutter.2.ogg", include_bytes!("../media/mobs_hexer_mutter.2.ogg")),
+    ("mobs_hexer_hiss.ogg", include_bytes!("../media/mobs_hexer_hiss.ogg")),
+    ("mobs_hexer_cast.ogg", include_bytes!("../media/mobs_hexer_cast.ogg")),
+    ("mobs_hexer_orb.ogg", include_bytes!("../media/mobs_hexer_orb.ogg")),
+    ("mobs_hexer_impact.ogg", include_bytes!("../media/mobs_hexer_impact.ogg")),
+    ("mobs_hexer_blink.ogg", include_bytes!("../media/mobs_hexer_blink.ogg")),
+    ("mobs_hexer_hurt.ogg", include_bytes!("../media/mobs_hexer_hurt.ogg")),
+    ("mobs_hexer_death.ogg", include_bytes!("../media/mobs_hexer_death.ogg")),
+    ("mobs_hexer_vanish.ogg", include_bytes!("../media/mobs_hexer_vanish.ogg")),
 ];
 
 // ---------------------------------------------------------------------------

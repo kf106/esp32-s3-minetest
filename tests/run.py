@@ -45,6 +45,7 @@ NETWORK = [
     ("tnt", {}, [], False),
     ("mobs", {}, [], True),
     ("wisp", {}, [], True),
+    ("hexer", {}, [], True),
     ("door", {}, [], False),
     ("falling", {}, [], False),
     ("chest", {}, [], False),

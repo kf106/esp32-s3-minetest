@@ -33,7 +33,7 @@ src/env_sounds.rs  running water and lava sounds near players
 src/fire.rs        fire: flames, flint and steel, spreading
 src/tnt.rs         TNT and gunpowder, and blasts
 src/settings.rs    the world's settings: fire, TNT and mobs on or off
-src/mobs.rs        hostile mobs: the Mossling and the Wisp
+src/mobs.rs        hostile mobs: the Mossling, the Wisp and the Hexer
 src/farming.rs     farming: soil, seeds, crops, hoes
 src/beds.rs        beds, sleeping and respawn points
 src/fences.rs      fences, fence rails, fence gates and walls
@@ -54,6 +54,7 @@ media/             built-in textures and models
 partitions.csv     the flash layout: firmware, and room for the game without an SD card
 tools/loadtest.py  bot players for load testing (see below)
 tools/make_mob_sounds.py  the mobs' placeholder sounds
+tools/make_mob_skins.py   the mobs' textures
 pc/                the PC (Linux, later Windows) build: main.rs, a systemd unit
 tests/             the tests: tests/run.py runs them all (see Testing below)
 ```

@@ -10,7 +10,13 @@
 //!   distance, then rushes a player, flickers faster with a rising whine
 //!   for a moment and bursts: a small blast that sets things alight
 //!   (unless TNT is off), like a little TNT. A player who backs off in
-//!   time stops it. It fades away at dawn, and water puts it out.
+//!   time stops it. It fades away at dawn, and water puts it out;
+//! - the Hexer, a gaunt hooded caster with burning, red-rimmed eyes and
+//!   dark veins, that keeps its distance and lobs slow glowing orbs in an
+//!   arc (they can be dodged, or punched out of the air), drawing the life
+//!   from the ground at its feet as it casts (grass dies to dirt, plants
+//!   wither), blinking away when a player gets close, and vanishing in a
+//!   puff of smoke at dawn.
 //!
 //! The server decides; the client draws. A mob is a GenericCAO using the
 //! player model (character.b3d), small (visual_size), physical, turning
@@ -55,6 +61,9 @@ const LAST_ID: u16 = 0x7FFF;
 pub const MAX_MOBS: usize = if cfg!(pc) { 64 } else { 16 };
 pub const PER_PLAYER: usize = if cfg!(pc) { 12 } else { 8 };
 pub const WISPS_PER_PLAYER: usize = 2;
+pub const HEXERS_PER_PLAYER: usize = 1;
+/// The most hex orbs in flight at once.
+const MAX_ORBS: usize = if cfg!(pc) { 32 } else { 8 };
 /// How loud a wisp's hum is.
 pub const HUM_GAIN: f32 = 0.35;
 const NEAR: f32 = 64.0;
@@ -80,6 +89,21 @@ const FUSE_ABORT: f32 = 4.5;
 const STALK_RANGE: f32 = 7.0;
 /// How high above the ground a wandering wisp keeps.
 const HOVER: (f32, f32) = (1.5, 4.0);
+/// A hexer keeps between these distances from its target, casting every
+/// attack_every (and a little) seconds, each cast taking CHANNEL; it
+/// blinks away from a player closer than BLINK_NEAR, at most every
+/// BLINK_EVERY.
+const KEEP: (f32, f32) = (6.0, 14.0);
+const CHANNEL: f32 = 0.75;
+const BLINK_NEAR: f32 = 4.0;
+const BLINK_EVERY: f32 = 8.0;
+pub const BLINK_SOUND: &str = "mobs_hexer_blink";
+/// A hex orb's speed across the ground, its gravity (floaty), how long it
+/// lasts, and how near it must pass a player to hit (generous).
+const ORB_SPEED: f32 = 7.0;
+const ORB_GRAVITY: f32 = 4.0;
+const ORB_LIFE: f32 = 6.0;
+const ORB_HIT: f32 = 0.7;
 /// A target further than this is lost; one out of sight this long, too.
 const LOSE_RANGE: f32 = 24.0;
 const LOSE_UNSEEN: f32 = 5.0;
@@ -122,6 +146,9 @@ pub trait Terrain {
 pub enum Kind {
     Mossling,
     Wisp,
+    Hexer,
+    /// A hexer's orb, in flight.
+    Orb,
 }
 
 /// What kind of mob it is.
@@ -141,6 +168,10 @@ pub struct Def {
     pub visual_size: [f32; 3],
     pub texture: &'static str,
     pub glow: i8,
+    /// A sprite's frames, down its texture (0: a mesh).
+    pub frames: i16,
+    /// How high above its position it sees from.
+    pub eye: f32,
     /// Whether it flies (no gravity).
     pub flies: bool,
     /// A wisp's fuse (seconds), and its blast's radius (0: it doesn't
@@ -186,6 +217,8 @@ pub const MOSSLING: Def = Def {
     visual_size: [0.7, 0.55, 0.7],
     texture: "mobs_mossling.png",
     glow: 0,
+    frames: 0,
+    eye: 0.8,
     flies: false,
     fuse: 0.0,
     burst: 0,
@@ -219,6 +252,8 @@ pub const WISP: Def = Def {
     visual_size: [0.8, 0.8, 0.8],
     texture: "mobs_wisp.png",
     glow: 14,
+    frames: 8,
+    eye: 0.0,
     flies: true,
     fuse: 1.5,
     burst: 2,
@@ -242,10 +277,97 @@ pub const WISP: Def = Def {
     drops: (content::ITEM_COAL_LUMP, 1, 1),
 };
 
+pub const HEXER: Def = Def {
+    name: "mobs:hexer",
+    description: "Hexer",
+    hp_max: 30,
+    half_width: 0.3,
+    height: 1.7,
+    below: 0.0,
+    mesh: "character.b3d",
+    visual_size: [1.0, 1.0, 1.0],
+    texture: "mobs_hexer.png",
+    glow: 2,
+    frames: 0,
+    eye: 1.5,
+    flies: false,
+    fuse: 0.0,
+    burst: 0,
+    walk_speed: 1.2,
+    run_speed: 2.6,
+    view_range: 24.0,
+    // Its orbs are thrown from up to this far.
+    reach: 20.0,
+    // An orb's damage, and how often it casts.
+    damage: 4,
+    attack_every: 3.0,
+    flee_hp: 0,
+    kills: "was hexed",
+    chatter: "mobs_hexer_mutter",
+    call: "mobs_hexer_hiss",
+    swipe: "mobs_hexer_cast",
+    hurt: "mobs_hexer_hurt",
+    death: "mobs_hexer_death",
+    sink: "mobs_hexer_vanish",
+    hum: "",
+    whine: "",
+    drops: (content::ITEM_IRON_LUMP, 1, 1),
+};
+
+pub const ORB: Def = Def {
+    name: "mobs:hexer_orb",
+    description: "Hex orb",
+    hp_max: 1,
+    half_width: 0.2,
+    height: 0.4,
+    below: 0.2,
+    mesh: "",
+    visual_size: [0.6, 0.6, 0.6],
+    texture: "mobs_hexer_orb.png",
+    glow: 14,
+    frames: 1,
+    eye: 0.0,
+    flies: true,
+    fuse: 0.0,
+    burst: 0,
+    walk_speed: 0.0,
+    run_speed: ORB_SPEED,
+    view_range: 0.0,
+    reach: ORB_HIT,
+    damage: 4,
+    attack_every: 0.0,
+    flee_hp: 0,
+    kills: "was hexed",
+    chatter: "",
+    call: "",
+    swipe: "",
+    hurt: "",
+    death: "mobs_hexer_impact",
+    sink: "",
+    hum: "mobs_hexer_orb",
+    whine: "",
+    drops: (0, 0, 0),
+};
+
 pub fn def(kind: Kind) -> &'static Def {
     match kind {
         Kind::Mossling => &MOSSLING,
         Kind::Wisp => &WISP,
+        Kind::Hexer => &HEXER,
+        Kind::Orb => &ORB,
+    }
+}
+
+/// What a hexer's draining does to a node: grass and litter die to dirt,
+/// and flowers, grasses and ferns wither to dry shrubs.
+pub fn drained(id: u16) -> Option<(u16, u8)> {
+    use content::*;
+    match id {
+        CONTENT_GRASS | CONTENT_LITTER | CONTENT_CONIFEROUS_LITTER => Some((CONTENT_DIRT, 0)),
+        CONTENT_DRY_GRASS => Some((CONTENT_DRY_DIRT, 0)),
+        CONTENT_PERMAFROST_MOSS => Some((CONTENT_PERMAFROST, 0)),
+        id if id != DRY_SHRUB && group_of(id, "flora") > 0 => Some((DRY_SHRUB, DRY_SHRUB_PARAM2)),
+        _ => None,
     }
 }
 
@@ -285,10 +407,13 @@ pub fn animation(a: Anim) -> Animation {
 /// The message showing a mob's animation: the model's frames, or a
 /// sprite's (a wisp: frames 0 to 3 slowly, 4 to 7 fast with its fuse lit).
 pub fn animation_message(m: &Mob) -> Vec<u8> {
-    if m.def().mesh.is_empty() {
+    let d = m.def();
+    if d.frames == 1 {
+        messages::set_sprite_message([0, 0], 1, 1.0)
+    } else if d.mesh.is_empty() {
         match m.anim {
-            Anim::Charge => messages::set_sprite_message([0, 4], 4, 0.05),
-            _ => messages::set_sprite_message([0, 0], 4, 0.15),
+            Anim::Charge => messages::set_sprite_message([0, d.frames / 2], (d.frames / 2) as u16, 0.05),
+            _ => messages::set_sprite_message([0, 0], (d.frames / 2) as u16, 0.15),
         }
     } else {
         messages::set_animation_message(animation(m.anim))
@@ -322,7 +447,7 @@ pub struct Mob {
     looks: u32,
     cooldown: f32,
     swing: f32,
-    /// A wisp's fuse: seconds left.
+    /// A wisp's fuse: seconds left. A hexer's: until it may blink again.
     fuse: f32,
     chatter: f32,
     /// How long it has been pushing against something, and a way round
@@ -380,7 +505,13 @@ pub enum Event {
     /// gone (Removed follows).
     Burst { mob: u16, pos: [f32; 3], radius: i32 },
     /// A mob hit a player: HP lost, and how they are thrown (nodes/s).
-    Hit { mob: u16, player: u16, damage: u16, push: [f32; 3] },
+    Hit { mob: u16, player: u16, damage: u16, push: [f32; 3], kills: &'static str },
+    /// A hexer draws the life from the ground about its feet (a node).
+    Drain(NodePos),
+    /// A hexer blinks to where it now is.
+    Blink(u16),
+    /// A hexer vanishes in a puff of smoke (Removed follows).
+    Vanish(u16),
     Removed(u16),
 }
 
@@ -450,43 +581,14 @@ impl Mobs {
         self.next_pack = self.next_pack.wrapping_add(1);
         let mut events = Vec::new();
         for (i, &pos) in at.iter().enumerate() {
-            if self.list.len() >= MAX_MOBS {
+            if self.list.iter().filter(|m| m.kind != Kind::Orb).count() >= MAX_MOBS {
                 break;
             }
             let id = self.new_id();
             let flank = [0.0, 1.0, -1.0][i % 3];
-            self.list.push(Mob {
-                id,
-                kind,
-                pos,
-                vel: [0.0; 3],
-                yaw: rng.range(0, 359) as f32,
-                hp: def(kind).hp_max,
-                state: State::Wander,
-                anim: Anim::Stand,
-                pack,
-                flank,
-                target: None,
-                unseen: 0.0,
-                want: [0.0; 2],
-                want_y: 0.0,
-                timer: 0.0,
-                think: rng.range(0, 250) as f32 / 1000.0,
-                looks: i as u32,
-                cooldown: 0.0,
-                swing: 0.0,
-                fuse: 0.0,
-                chatter: rng.range(3, 10) as f32,
-                stuck: 0.0,
-                detour: 0.0,
-                detour_side: 1.0,
-                dawn: None,
-                on_ground: false,
-                thrown: false,
-                sent: [0.0; 3],
-                since_sent: 0.0,
-                dirty: false,
-            });
+            let mut m = new_mob(id, kind, pos, pack, flank, rng);
+            m.looks = i as u32;
+            self.list.push(m);
             events.push(Event::Added(id));
         }
         events
@@ -563,18 +665,34 @@ impl Mobs {
             }
             near
         });
-        let others: Vec<(u16, u16, [f32; 3])> = self.list.iter().map(|m| (m.id, m.pack, m.pos)).collect();
+        let others: Vec<(u16, u16, [f32; 3])> = self.list.iter().filter(|m| m.kind != Kind::Orb).map(|m| (m.id, m.pack, m.pos)).collect();
         let mut spotted: Vec<(u16, u16)> = Vec::new();
+        let mut casts: Vec<([f32; 3], [f32; 3])> = Vec::new();
         for m in &mut self.list {
             m.think -= dt;
             if m.think <= 0.0 {
                 m.think += THINK;
-                if m.def().flies {
-                    think_wisp(m, players, t, day, rng, &mut events);
-                } else {
-                    think(m, &others, players, t, day, rng, &mut events, &mut spotted);
+                match m.kind {
+                    Kind::Wisp => think_wisp(m, players, t, day, rng, &mut events),
+                    Kind::Hexer => think_hexer(m, players, t, day, rng, &mut events, &mut casts),
+                    Kind::Orb => {}
+                    Kind::Mossling => think(m, &others, players, t, day, rng, &mut events, &mut spotted),
                 }
             }
+        }
+        // Orbs cast, while there aren't too many about.
+        for (pos, vel) in casts {
+            if self.list.iter().filter(|m| m.kind == Kind::Orb).count() >= MAX_ORBS {
+                break;
+            }
+            let id = self.new_id();
+            let mut orb = new_mob(id, Kind::Orb, pos, u16::MAX, 0.0, rng);
+            orb.vel = vel;
+            orb.sent = vel;
+            orb.timer = ORB_LIFE;
+            orb.state = State::Chase;
+            self.list.push(orb);
+            events.push(Event::Added(id));
         }
         // A pack hunts together: whoever sees a player, the rest join in.
         for (pack, target) in spotted {
@@ -586,7 +704,11 @@ impl Mobs {
         }
         let mut gone = Vec::new();
         for m in &mut self.list {
-            let done = if m.def().flies { fly(m, dt, t, &mut events) } else { physics(m, dt, t, &mut events) };
+            let done = match m.kind {
+                Kind::Orb => orb_flight(m, dt, t, players, &mut events),
+                _ if m.def().flies => fly(m, dt, t, &mut events),
+                _ => physics(m, dt, t, &mut events),
+            };
             if done {
                 gone.push(m.id);
             }
@@ -604,16 +726,22 @@ impl Mobs {
             if self.list.len() >= MAX_MOBS {
                 break;
             }
-            let near = self.list.iter().filter(|m| dist2(m.pos, p.pos) <= NEAR * NEAR).count();
+            let near = self.list.iter().filter(|m| m.kind != Kind::Orb && dist2(m.pos, p.pos) <= NEAR * NEAR).count();
             if near >= PER_PLAYER {
                 continue;
             }
             let wisps = self.list.iter().filter(|m| m.kind == Kind::Wisp && dist2(m.pos, p.pos) <= NEAR * NEAR).count();
-            // One time in three a wisp, if there is room for one.
-            let kind = if wisps < WISPS_PER_PLAYER && rng.one_in(3) { Kind::Wisp } else { Kind::Mossling };
+            let hexers = self.list.iter().filter(|m| m.kind == Kind::Hexer && dist2(m.pos, p.pos) <= NEAR * NEAR).count();
+            // One time in three a wisp, one in five a hexer, if there is
+            // room for one.
+            let kind = match rng.range(0, 14) {
+                0..=4 if wisps < WISPS_PER_PLAYER => Kind::Wisp,
+                5..=7 if hexers < HEXERS_PER_PLAYER => Kind::Hexer,
+                _ => Kind::Mossling,
+            };
             for _ in 0..4 {
                 if let Some(floor) = spawn_spot(t, p.pos, players, kind == Kind::Mossling, rng) {
-                    let count = if kind == Kind::Wisp { 1 } else { rng.range(2, 3) as usize };
+                    let count = if kind == Kind::Mossling { rng.range(2, 3) as usize } else { 1 };
                     let count = count.min(PER_PLAYER - near).min(MAX_MOBS - self.list.len());
                     let at = if kind == Kind::Wisp { vec![wisp_place(floor)] } else { pack_places(t, floor, count) };
                     events.extend(self.add_pack(kind, &at, rng));
@@ -637,9 +765,48 @@ impl Mobs {
         if kind == Kind::Wisp {
             return self.add_pack(kind, &[wisp_place(floor)], rng);
         }
+        if kind == Kind::Hexer {
+            return self.add_pack(kind, &pack_places(t, floor, 1), rng);
+        }
         let count = 3.min(MAX_MOBS.saturating_sub(self.list.len()));
         let at = pack_places(t, floor, count);
         self.add_pack(kind, &at, rng)
+    }
+}
+
+/// A new mob, standing (or hanging) still.
+fn new_mob(id: u16, kind: Kind, pos: [f32; 3], pack: u16, flank: f32, rng: &mut Rng) -> Mob {
+    Mob {
+        id,
+        kind,
+        pos,
+        vel: [0.0; 3],
+        yaw: rng.range(0, 359) as f32,
+        hp: def(kind).hp_max,
+        state: State::Wander,
+        anim: Anim::Stand,
+        pack,
+        flank,
+        target: None,
+        unseen: 0.0,
+        want: [0.0; 2],
+        want_y: 0.0,
+        timer: 0.0,
+        think: rng.range(0, 250) as f32 / 1000.0,
+        looks: 0,
+        cooldown: 0.0,
+        swing: 0.0,
+        fuse: 0.0,
+        chatter: rng.range(3, 10) as f32,
+        stuck: 0.0,
+        detour: 0.0,
+        detour_side: 1.0,
+        dawn: None,
+        on_ground: false,
+        thrown: false,
+        sent: [0.0; 3],
+        since_sent: 0.0,
+        dirty: false,
     }
 }
 
@@ -708,7 +875,7 @@ pub fn clear_line(a: [f32; 3], b: [f32; 3], t: &dyn Terrain) -> bool {
 /// Whether a mob sees a player's eyes (from 0.8 above its feet, or a
 /// wisp's middle).
 fn sees(m: &Mob, p: &Player, t: &dyn Terrain) -> bool {
-    let eye = if m.def().flies { m.pos } else { [m.pos[0], m.pos[1] + 0.8, m.pos[2]] };
+    let eye = [m.pos[0], m.pos[1] + m.def().eye, m.pos[2]];
     let target = [p.pos[0], p.pos[1] + 1.45, p.pos[2]];
     clear_line(eye, target, t)
 }
@@ -807,7 +974,7 @@ fn think(m: &mut Mob, others: &[(u16, u16, [f32; 3])], players: &[Player], t: &d
                     m.swing = 0.5;
                     anim = Anim::Attack;
                     let push = [dir[0] * 2.0, 1.5, dir[1] * 2.0];
-                    events.push(Event::Hit { mob: m.id, player: p.id, damage: d.damage, push });
+                    events.push(Event::Hit { mob: m.id, player: p.id, damage: d.damage, push, kills: d.kills });
                     events.push(Event::Sound(m.id, d.swipe, 0.8, 16.0, m.pos));
                 }
             } else {
@@ -1057,6 +1224,253 @@ fn think_wisp(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: 
     }
 }
 
+/// A hexer thinks: wanders muttering; once it sees a player, keeps its
+/// distance from them (backing off, closing in, or circling), and every
+/// few seconds, while it can see them, stops to cast: drawing the life
+/// from the ground at its feet, then lobbing an orb at them. A player who
+/// comes close, it blinks away from.
+#[allow(clippy::too_many_arguments)]
+fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: &mut Rng, events: &mut Vec<Event>, casts: &mut Vec<([f32; 3], [f32; 3])>) {
+    if m.hp == 0 {
+        return;
+    }
+    let d = m.def();
+    m.cooldown = (m.cooldown - THINK).max(0.0);
+    m.fuse = (m.fuse - THINK).max(0.0);
+    m.looks = m.looks.wrapping_add(1);
+    let look = m.looks % 2 == 0;
+    // At dawn it vanishes in a puff of smoke.
+    if day {
+        let left = *m.dawn.get_or_insert_with(|| rng.range(0, 80) as f32 / 10.0);
+        if left <= 0.0 {
+            events.push(Event::Sound(m.id, d.sink, 0.8, 24.0, m.pos));
+            events.push(Event::Vanish(m.id));
+            m.hp = 0;
+            return;
+        }
+        m.dawn = Some(left - THINK);
+    } else {
+        m.dawn = None;
+    }
+    let mut target = m.target.and_then(|id| players.iter().find(|p| p.id == id && p.alive)).copied();
+    if let Some(p) = target {
+        if dist2(p.pos, m.pos) > LOSE_RANGE.max(d.view_range) * LOSE_RANGE.max(d.view_range) {
+            target = None;
+        } else if look {
+            if sees(m, &p, t) {
+                m.unseen = 0.0;
+            } else {
+                m.unseen += 2.0 * THINK;
+                if m.unseen > LOSE_UNSEEN * 2.0 {
+                    target = None;
+                }
+            }
+        }
+    }
+    if target.is_none() && m.target.is_some() {
+        m.target = None;
+        m.state = State::Wander;
+        m.timer = 0.0;
+        m.swing = 0.0;
+    }
+    if target.is_none() && look && !day {
+        let mut near: Vec<&Player> = players.iter().filter(|p| p.alive && dist2(p.pos, m.pos) <= d.view_range * d.view_range).collect();
+        near.sort_by(|a, b| dist2(a.pos, m.pos).total_cmp(&dist2(b.pos, m.pos)));
+        if let Some(p) = near.into_iter().find(|p| sees(m, p, t)) {
+            target = Some(*p);
+            m.target = Some(p.id);
+            m.state = State::Chase;
+            m.unseen = 0.0;
+            m.cooldown = m.cooldown.max(1.0);
+            events.push(Event::Sound(m.id, d.call, 1.0, 32.0, m.pos));
+        }
+    }
+    let mut anim = Anim::Stand;
+    let mut face: Option<[f32; 2]> = None;
+    match target {
+        Some(p) if m.state == State::Chase => {
+            let to = [p.pos[0] - m.pos[0], p.pos[2] - m.pos[2]];
+            let dist = (to[0] * to[0] + to[1] * to[1]).sqrt();
+            let dir = norm2(to);
+            if m.swing > 0.0 {
+                // Casting: still, facing them, drawing on the ground.
+                m.want = [0.0; 2];
+                face = Some(dir);
+                anim = Anim::Attack;
+                m.swing -= THINK;
+                if m.swing <= 0.0 {
+                    let from = [m.pos[0] + dir[0] * 0.5, m.pos[1] + 1.5, m.pos[2] + dir[1] * 0.5];
+                    casts.push((from, orb_velocity(from, [p.pos[0], p.pos[1] + 1.0, p.pos[2]])));
+                    events.push(Event::Drain(node_at([m.pos[0], m.pos[1] - 0.5, m.pos[2]])));
+                    m.cooldown = d.attack_every + rng.range(0, 10) as f32 / 10.0;
+                }
+            } else if dist < BLINK_NEAR && m.fuse <= 0.0 {
+                // Too close: it blinks away.
+                if let Some(to) = blink_spot(m, p.pos, t, rng) {
+                    m.pos = to;
+                    m.vel = [0.0; 3];
+                    m.want = [0.0; 2];
+                    m.sent = [0.0; 3];
+                    m.since_sent = 0.0;
+                    m.fuse = BLINK_EVERY;
+                    m.cooldown = m.cooldown.min(0.5);
+                    events.push(Event::Blink(m.id));
+                    events.push(Event::Sound(m.id, BLINK_SOUND, 1.0, 24.0, m.pos));
+                }
+            } else {
+                if m.cooldown <= 0.0 && m.unseen == 0.0 && dist > 2.0 && dist <= d.reach && m.on_ground {
+                    m.swing = CHANNEL;
+                    anim = Anim::Attack;
+                    face = Some(dir);
+                    m.want = [0.0; 2];
+                    events.push(Event::Sound(m.id, d.swipe, 1.0, 32.0, m.pos));
+                } else {
+                    // Keeping its distance, circling them.
+                    m.timer -= THINK;
+                    if m.timer <= 0.0 {
+                        m.timer = rng.range(2, 5) as f32;
+                        m.flank = if rng.one_in(2) { 1.0 } else { -1.0 };
+                    }
+                    let go = if dist < KEEP.0 {
+                        [-dir[0], -dir[1]]
+                    } else if dist > KEEP.1 {
+                        dir
+                    } else {
+                        [-dir[1] * m.flank, dir[0] * m.flank]
+                    };
+                    let speed = if dist < KEEP.0 || dist > KEEP.1 { d.run_speed } else { d.walk_speed };
+                    let mut go = norm2(go);
+                    if m.stuck > 0.75 && m.detour <= 0.0 {
+                        m.detour = 1.0;
+                        m.detour_side = if rng.one_in(2) { 1.0 } else { -1.0 };
+                    }
+                    if m.detour > 0.0 {
+                        m.detour -= THINK;
+                        go = [-go[1] * m.detour_side, go[0] * m.detour_side];
+                    }
+                    m.want = [go[0] * speed, go[1] * speed];
+                    anim = if speed > d.walk_speed { Anim::Run } else { Anim::Walk };
+                    if dist >= KEEP.0 && dist <= KEEP.1 {
+                        face = Some(dir);
+                    }
+                }
+            }
+        }
+        _ => {
+            m.state = State::Wander;
+            m.timer -= THINK;
+            if m.timer <= 0.0 || m.stuck > 0.5 {
+                m.timer = rng.range(3, 8) as f32;
+                m.stuck = 0.0;
+                if rng.one_in(2) {
+                    m.want = [0.0; 2];
+                } else {
+                    let a = (rng.range(0, 359) as f32).to_radians();
+                    m.want = [a.cos() * d.walk_speed, a.sin() * d.walk_speed];
+                }
+            }
+            if m.want != [0.0; 2] {
+                anim = Anim::Walk;
+            }
+        }
+    }
+    // It mutters to itself.
+    m.chatter -= THINK;
+    if m.chatter <= 0.0 {
+        m.chatter = rng.range(7, 16) as f32;
+        if m.swing <= 0.0 {
+            events.push(Event::Sound(m.id, d.chatter, 0.8, 16.0, m.pos));
+        }
+    }
+    if m.want != [0.0; 2] && !safe_ahead(m, t) {
+        m.want = [0.0; 2];
+        if m.state == State::Wander {
+            m.timer = 0.0;
+        }
+        if anim != Anim::Attack {
+            anim = Anim::Stand;
+        }
+    }
+    // It turns to face the way it goes, or the player (as it circles,
+    // or casts: tell clients, which only turn it the way it moves).
+    let facing = face.or((m.want != [0.0; 2]).then_some(m.want)).map(yaw_of);
+    if let Some(yaw) = facing {
+        let turn = (yaw - m.yaw).rem_euclid(360.0);
+        if face.is_some() && turn > 20.0 && turn < 340.0 {
+            m.dirty = true;
+        }
+        m.yaw = yaw;
+    }
+    if anim != m.anim {
+        m.anim = anim;
+        events.push(Event::Animated(m.id));
+    }
+}
+
+/// An orb's velocity from `from` to land on `to`: across at ORB_SPEED, in
+/// an arc under ORB_GRAVITY.
+fn orb_velocity(from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
+    let (dx, dy, dz) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+    let across = (dx * dx + dz * dz).sqrt();
+    let time = (across / ORB_SPEED).max(0.3);
+    let vy = (dy + 0.5 * ORB_GRAVITY * time * time) / time;
+    [dx / time, vy.clamp(-10.0, 12.0), dz / time]
+}
+
+/// Where a hexer blinks to: 4 to 8 nodes from where it is, away from the
+/// player at `from`, on the ground with room to stand.
+fn blink_spot(m: &Mob, from: [f32; 3], t: &dyn Terrain, rng: &mut Rng) -> Option<[f32; 3]> {
+    let away = norm2([m.pos[0] - from[0], m.pos[2] - from[2]]);
+    let base = away[1].atan2(away[0]);
+    for _ in 0..8 {
+        let a = base + (rng.range(0, 180) as f32 - 90.0).to_radians();
+        let r = rng.range(4, 8) as f32;
+        let (x, z) = ((m.pos[0] + a.cos() * r).round() as i32, (m.pos[2] + a.sin() * r).round() as i32);
+        let y0 = (m.pos[1] + 0.5).floor() as i32;
+        if let Some(f) = (y0 - 4..=y0 + 3).rev().map(|y| (x, y - 1, z)).find(|&f| fits(t, f)) {
+            return Some([x as f32, f.1 as f32 + 0.5, z as f32]);
+        }
+    }
+    None
+}
+
+/// Move a hex orb on by `dt`, in its arc: it hits a player it passes near
+/// (and is gone), or bursts against a node, or in water, or in time.
+fn orb_flight(m: &mut Mob, dt: f32, t: &dyn Terrain, players: &[Player], events: &mut Vec<Event>) -> bool {
+    let d = m.def();
+    if m.hp == 0 {
+        return true;
+    }
+    m.timer -= dt;
+    let mut time = 0.0;
+    while time < dt {
+        let step = STEP.min(dt - time);
+        time += step;
+        for i in 0..3 {
+            m.pos[i] += m.vel[i] * step;
+        }
+        m.pos[1] -= 0.5 * ORB_GRAVITY * step * step;
+        m.vel[1] -= ORB_GRAVITY * step;
+        for p in players.iter().filter(|p| p.alive) {
+            let (dx, dz) = (m.pos[0] - p.pos[0], m.pos[2] - p.pos[2]);
+            let level = m.pos[1] - p.pos[1];
+            if dx * dx + dz * dz <= ORB_HIT * ORB_HIT && (-0.3..=2.0).contains(&level) {
+                let (dir, _) = norm3([m.vel[0], 0.0, m.vel[2]]);
+                let push = [dir[0] * 3.0, 2.0, dir[2] * 3.0];
+                events.push(Event::Hit { mob: m.id, player: p.id, damage: d.damage, push, kills: d.kills });
+                events.push(Event::Sound(m.id, d.death, 1.0, 24.0, m.pos));
+                return true;
+            }
+        }
+        let n = node_at(m.pos);
+        if t.solid(n) || t.liquid(n) {
+            events.push(Event::Sound(m.id, d.death, 0.8, 24.0, m.pos));
+            return true;
+        }
+    }
+    m.timer <= 0.0 || m.pos[1] < -2000.0
+}
+
 /// Move a flying mob on by `dt`: straight where it wants, stopping against
 /// nodes. Returns whether it is gone (burst, faded, or put out by water).
 fn fly(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bool {
@@ -1136,6 +1550,9 @@ fn safe_ahead(m: &Mob, t: &dyn Terrain) -> bool {
 /// Move a mob on by `dt`. Returns whether it is gone (sunk).
 fn physics(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bool {
     m.since_sent += dt;
+    if m.hp == 0 {
+        return true; // vanished
+    }
     if m.state == State::Sinking {
         m.pos[1] += m.vel[1] * dt;
         m.timer -= dt;
@@ -1342,7 +1759,7 @@ pub fn properties(m: &Mob, physical: bool) -> Vec<u8> {
         eye_height: 0.8,
         damage_texture_modifier: if sprite { "^[brighten" } else { "^[colorize:#ff000060" },
         zoom_fov: 0.0,
-        spritediv: if sprite { [1, 8] } else { [1, 1] },
+        spritediv: if sprite { [1, d.frames.max(1)] } else { [1, 1] },
         face_movement: if sprite { None } else { Some(-90.0) },
         use_texture_alpha: sprite,
     })
@@ -1351,14 +1768,18 @@ pub fn properties(m: &Mob, physical: bool) -> Vec<u8> {
 /// Where it is and how it moves (with gravity, unless it flies or is
 /// going at dawn).
 pub fn position(m: &Mob) -> Vec<u8> {
-    let acc = if m.state == State::Sinking || m.def().flies { [0.0; 3] } else { [0.0, -messages::GRAVITY * 10.0, 0.0] };
+    let acc = match m.kind {
+        Kind::Orb => [0.0, -ORB_GRAVITY * 10.0, 0.0],
+        _ if m.state == State::Sinking || m.def().flies => [0.0; 3],
+        _ => [0.0, -messages::GRAVITY * 10.0, 0.0],
+    };
     messages::object_position_message(m.pos_bs(), m.vel.map(|v| v * 10.0), acc, m.yaw)
 }
 
 /// What a client needs to show a mob.
 pub fn init_data(m: &Mob) -> Vec<u8> {
     let messages = [
-        properties(m, m.state != State::Sinking),
+        properties(m, m.state != State::Sinking && m.kind != Kind::Orb),
         messages::armor_groups_message(),
         animation_message(m),
         messages::not_attached_message(),
@@ -1525,14 +1946,16 @@ mod tests {
         let mut t = Flat::new();
         let mut rng = Rng::new();
         let player = [Player { id: 2, pos: [0.0, 0.5, 0.0], alive: true }];
-        // No trees: no mosslings, but wisps (no more than two).
+        // No trees: no mosslings, but wisps and a hexer (no more than
+        // two and one).
         let mut mobs = Mobs::new();
-        for _ in 0..50 {
+        for _ in 0..80 {
             mobs.spawn(&t, &player, &mut rng);
         }
-        assert!(mobs.iter().all(|m| m.kind == Kind::Wisp));
-        assert_eq!(mobs.len(), WISPS_PER_PLAYER);
-        assert!(mobs.iter().all(|m| (m.pos[1] - 2.0).abs() < 0.01));
+        assert!(mobs.iter().all(|m| m.kind != Kind::Mossling));
+        assert_eq!(mobs.iter().filter(|m| m.kind == Kind::Wisp).count(), WISPS_PER_PLAYER);
+        assert_eq!(mobs.iter().filter(|m| m.kind == Kind::Hexer).count(), HEXERS_PER_PLAYER);
+        assert!(mobs.iter().all(|m| (m.pos[1] - if m.kind == Kind::Wisp { 2.0 } else { 0.5 }).abs() < 0.01));
         let mut mobs = Mobs::new();
         // A forest all round: packs, up to the cap, at a distance.
         for x in (-50..=50).step_by(4) {
@@ -1552,6 +1975,7 @@ mod tests {
             assert!((m.pos[1] - if m.kind == Kind::Wisp { 2.0 } else { 0.5 }).abs() < 0.01);
         }
         assert!(mobs.iter().filter(|m| m.kind == Kind::Wisp).count() <= WISPS_PER_PLAYER);
+        assert!(mobs.iter().filter(|m| m.kind == Kind::Hexer).count() <= HEXERS_PER_PLAYER);
         // Lit by a torch: none.
         let mut lit = Flat { trees: t.trees.clone(), ..Flat::new() };
         lit.torch = Some((0, 1, 0));
@@ -1621,6 +2045,64 @@ mod tests {
         mobs.add_pack(Kind::Wisp, &[[0.0, 2.0, 0.0]], &mut rng);
         assert_eq!(mobs.punch(FIRST_ID, 2, [-1.0, 1.5, 0.0], 4).unwrap().hp, 2);
         assert_eq!(mobs.harm(FIRST_ID, None, [-1.0, 1.5, 0.0], 3).unwrap().hp, 0);
+    }
+
+    #[test]
+    fn hexer_casts_and_blinks() {
+        let t = Flat::new();
+        let mut rng = Rng::new();
+        let mut mobs = Mobs::new();
+        mobs.add_pack(Kind::Hexer, &[[0.0, 0.5, 0.0]], &mut rng);
+        let player = [Player { id: 2, pos: [10.0, 0.5, 3.0], alive: true }];
+        let ev = run(&mut mobs, &t, &player, 12.0, &mut rng);
+        let drains = ev.iter().filter(|e| matches!(e, Event::Drain(_))).count();
+        let orbs = ev.iter().filter(|e| matches!(e, Event::Added(id) if *id != FIRST_ID)).count();
+        let hits = ev.iter().filter(|e| matches!(e, Event::Hit { player: 2, damage: 4, kills: "was hexed", .. })).count();
+        assert!(drains >= 2 && orbs == drains, "{drains} drains, {orbs} orbs");
+        assert!(hits >= 1, "{hits} hits of {orbs} orbs");
+        assert!(ev.iter().any(|e| matches!(e, Event::Sound(_, s, _, _, _) if *s == HEXER.call)));
+        // It keeps its distance.
+        let m = mobs.get(FIRST_ID).unwrap();
+        let d = dist2(m.pos, player[0].pos).sqrt();
+        assert!((4.0..=16.0).contains(&d), "{d}");
+        // A player right beside it: it blinks away.
+        let close = [Player { id: 2, pos: [m.pos[0] + 1.5, m.pos[1], m.pos[2]], alive: true }];
+        let ev = run(&mut mobs, &t, &close, 1.0, &mut rng);
+        assert!(ev.contains(&Event::Blink(FIRST_ID)), "{ev:?}");
+        let m = mobs.get(FIRST_ID).unwrap();
+        assert!(dist2(m.pos, close[0].pos) > 9.0);
+        // At dawn, gone in smoke.
+        let mut all = Vec::new();
+        for _ in 0..200 {
+            all.extend(mobs.step(0.05, &t, &close, true, &mut rng));
+        }
+        assert!(all.contains(&Event::Vanish(FIRST_ID)) && all.contains(&Event::Removed(FIRST_ID)));
+        assert!(mobs.iter().all(|m| m.kind == Kind::Orb));
+    }
+
+    #[test]
+    fn orbs() {
+        // Thrown at a point, an orb comes down on it.
+        let t = Flat::new();
+        let mut rng = Rng::new();
+        for to in [[10.0, 1.5, 0.0], [4.0, 3.0, 4.0], [15.0, 1.5, -6.0]] {
+            let from = [0.0, 2.0, 0.0];
+            let mut m = new_mob(FIRST_ID, Kind::Orb, from, 0, 0.0, &mut rng);
+            m.vel = orb_velocity(from, to);
+            m.timer = ORB_LIFE;
+            let target = [Player { id: 2, pos: [to[0], to[1] - 1.0, to[2]], alive: true }];
+            let mut ev = Vec::new();
+            let mut steps = 0;
+            while !orb_flight(&mut m, 0.05, &t, &target, &mut ev) {
+                steps += 1;
+                assert!(steps < 200);
+            }
+            assert!(ev.iter().any(|e| matches!(e, Event::Hit { .. })), "{to:?}: {:?}", m.pos);
+        }
+        // What the draining does.
+        assert_eq!(drained(content::CONTENT_GRASS), Some((content::CONTENT_DIRT, 0)));
+        assert_eq!(drained(content::CONTENT_STONE), None);
+        assert_eq!(drained(content::DRY_SHRUB), None);
     }
 
     #[test]

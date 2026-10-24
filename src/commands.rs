@@ -46,7 +46,7 @@ const COMMANDS: &[Command] = &[
     cmd("kick", "<name> [<reason>]", "Kick a player", &["kick"]),
     cmd("kill", "[<name>]", "Kill player or yourself", &["server"]),
     cmd("me", "<action>", "Show chat action (e.g., '/me orders a pizza' displays '<player name> orders a pizza')", &["shout"]),
-    cmd("mobs", "[on | off | spawn [mossling | wisp]]", "Show whether hostile mobs spawn, or turn them on or off, or bring a pack", &[]),
+    cmd("mobs", "[on | off | spawn [mossling | wisp | hexer]]", "Show whether hostile mobs spawn, or turn them on or off, or bring a pack", &[]),
     cmd("msg", "<name> <message>", "Send a direct message to a player", &["shout"]),
     cmd("privs", "[<name>]", "Show privileges of yourself or another player", &[]),
     cmd("revoke", "<name> (<privilege> [, <privilege2> [<...>]] | all)", "Remove privileges from player", &[]),
@@ -578,7 +578,7 @@ impl Server {
     /// with "on" or "off" (and the server or ban privilege), turn them on
     /// or off, kept in the world (off, those about are gone at once); with
     /// "spawn" (and the server privilege), bring a pack of mosslings (or,
-    /// "spawn wisp", a wisp) in front of you.
+    /// "spawn wisp" or "spawn hexer", a wisp or a hexer) in front of you.
     fn cmd_mobs(&mut self, caller: &str, param: &str) -> String {
         let on = match param {
             "" => {
@@ -587,19 +587,24 @@ impl Server {
             }
             "on" => true,
             "off" => false,
-            "spawn" | "spawn mossling" | "spawn wisp" => {
+            "spawn" | "spawn mossling" | "spawn wisp" | "spawn hexer" => {
                 if !self.privs_of(caller).has("server") {
                     return "You don't have permission to run this command (missing privilege: server).".to_string();
                 }
                 if !self.settings.mobs() {
                     return "Mobs are off (/mobs on).".to_string();
                 }
-                let wisp = param.ends_with("wisp");
-                let kind = if wisp { crate::mobs::Kind::Wisp } else { crate::mobs::Kind::Mossling };
-                return match self.spawn_mobs_near(caller, kind) {
-                    0 => "There is no room for them in front of you.".to_string(),
-                    _ if wisp => "A wisp comes.".to_string(),
-                    n => format!("{n} mosslings come."),
+                use crate::mobs::Kind;
+                let kind = match param {
+                    "spawn wisp" => Kind::Wisp,
+                    "spawn hexer" => Kind::Hexer,
+                    _ => Kind::Mossling,
+                };
+                return match (self.spawn_mobs_near(caller, kind), kind) {
+                    (0, _) => "There is no room for them in front of you.".to_string(),
+                    (_, Kind::Wisp) => "A wisp comes.".to_string(),
+                    (_, Kind::Hexer) => "A hexer comes.".to_string(),
+                    (n, _) => format!("{n} mosslings come."),
                 };
             }
             _ => return "Invalid parameters (see /help mobs).".to_string(),

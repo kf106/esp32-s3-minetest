@@ -25,7 +25,7 @@ It covers most of Minetest Game: 29 of its 34 mods, with boats, carts, butterfli
 - **[Crafting and smelting](docs/features.md#crafting-and-smelting):** Minetest Game's recipes and furnace, with its in-game crafting guide.
 - **[Building](docs/features.md#building):** stairs and slabs, doors and trapdoors, fences, walls, glass panes, chests, signs.
 - **[Tools and items](docs/features.md#tools-and-items):** tools that wear, torches that light caves, flint and steel, TNT and gunpowder (with a switch for moderators), buckets, keys, the screwdriver, binoculars and the mapping kit, books you can write in.
-- **[Mobs](docs/features.md#mobs):** optional, and our own (Minetest Game has none): mosslings that hunt in packs at night, and wisps that drift up and burst, off until an admin turns them on.
+- **[Mobs](docs/features.md#mobs):** optional, and our own (Minetest Game has none): mosslings that hunt in packs at night, wisps that drift up and burst, and hexers that drain the land and hurl hexes, off until an admin turns them on.
 - **[Players](docs/features.md#players):** skins (add your own), health, drowning, bones, beds and respawn points, dropped items, Minetest Game's sounds.
 - **[The server](docs/features.md#the-server):** Luanti's protocol (5.17, protocol 53), SRP logins, chat with Luanti's [commands and privileges](docs/admin.md), saving as it goes so pulling the plug loses at most a few seconds.
 - **[The board](docs/features.md#the-board):** status pages on the LCD, and a status light.

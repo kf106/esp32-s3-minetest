@@ -69,6 +69,8 @@ const CHEST_HEARING: f32 = 10.0;
 const FURNACE_HEARING: f32 = 16.0;
 /// How far sounds carry by default (Luanti's max_hear_distance).
 const HEARING: f32 = 32.0;
+/// How many nodes a hexer's cast drains at most.
+const DRAIN_NODES: u32 = 4;
 /// How often the heaps are checked for damage.
 const HEAP_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// How many recent events the heap check reports.
@@ -4923,12 +4925,20 @@ impl Server {
                 }
                 Event::Sound(id, sound, gain, range, pos) => self.mob_sound(id, sound, gain, range, pos),
                 Event::Fuse(id, lit) => self.mob_fuse(id, lit),
+                Event::Drain(feet) => self.drain_land(feet),
+                Event::Blink(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        messages.push((id, mobs::position(m)));
+                    }
+                }
+                // A puff of smoke: the client's own, for an object punched
+                // down to 0 HP. Removed follows.
+                Event::Vanish(id) => messages.push((id, punched_message(0))),
                 Event::Burst { mob, pos, radius } => {
                     let kills = self.mobs.get(mob).map_or("was burnt up by a wisp", |m| m.def().kills);
                     self.mob_burst(pos, radius, kills);
                 }
-                Event::Hit { mob, player, damage, push } => {
-                    let kills = self.mobs.get(mob).map_or("was killed", |m| m.def().kills);
+                Event::Hit { mob: _, player, damage, push, kills } => {
                     let Some(addr) = self.peers.iter().find(|(_, p)| p.id == player && p.ready).map(|(a, _)| *a) else {
                         continue;
                     };
@@ -4937,8 +4947,16 @@ impl Server {
                 }
             }
         }
-        if !added.is_empty() || !removed.is_empty() {
-            self.send_to_players(&build_remove_add(&removed, &added));
+        // New ones first, then what they all do, then those gone (a hexer's
+        // last puff of smoke must come before it goes).
+        if !added.is_empty() {
+            self.send_to_players(&build_remove_add(&[], &added));
+        }
+        if !messages.is_empty() {
+            self.send_to_players(&build_object_messages(&messages));
+        }
+        if !removed.is_empty() {
+            self.send_to_players(&build_remove_add(&removed, &[]));
         }
         // New wisps hum, as long as they are about.
         for (id, _) in &added {
@@ -4952,9 +4970,6 @@ impl Server {
             let hum = self.new_sound_id();
             self.mob_sounds.insert(*id, (hum, 0));
             self.send_to_players(&build_play_sound_object(hum, sound, mobs::HUM_GAIN, pos_bs, *id, true));
-        }
-        if !messages.is_empty() {
-            self.send_to_players(&build_object_messages(&messages));
         }
     }
 
@@ -5042,6 +5057,9 @@ impl Server {
         self.send_to_players(&build_remove_add(&[id], &[]));
         self.stop_mob_sounds(id);
         let (item, lo, hi) = d.drops;
+        if item == 0 {
+            return true;
+        }
         let count = self.rng.range(lo, hi) as u16;
         let drop_at = [hit.pos[0], hit.pos[1] + 0.5, hit.pos[2]];
         let vel = [(self.rng.range(0, 20) as f32 - 10.0) / 10.0, 2.0, (self.rng.range(0, 20) as f32 - 10.0) / 10.0];
@@ -5114,6 +5132,31 @@ impl Server {
         let ids = self.mobs.clear();
         if !ids.is_empty() {
             self.send_to_players(&build_remove_add(&ids, &[]));
+        }
+    }
+
+    /// A hexer draws the life from the ground about its feet: up to
+    /// DRAIN_NODES nodes within 2 of `feet` (at its level, a node up or
+    /// down) die: grass to dirt, plants on it to dry shrubs.
+    fn drain_land(&mut self, feet: NodePos) {
+        let mut left = DRAIN_NODES;
+        for _ in 0..16 {
+            if left == 0 {
+                break;
+            }
+            let (dx, dz) = (self.rng.range(0, 4) as i32 - 2, self.rng.range(0, 4) as i32 - 2);
+            for dy in [0, 1, -1, 2] {
+                let p = (feet.0 + dx, feet.1 + dy, feet.2 + dz);
+                let id = self.world.node(p);
+                let Some((to, param2)) = mobs::drained(id) else {
+                    continue;
+                };
+                self.world.set_node(p, to, param2);
+                let p16 = [p.0 as i16, p.1 as i16, p.2 as i16];
+                self.broadcast_node(p16, &build_addnode(p16, to, param2));
+                left -= 1;
+                break;
+            }
         }
     }
 
