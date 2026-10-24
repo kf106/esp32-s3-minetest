@@ -18,7 +18,7 @@ A standard, unmodified Luanti client connects to it over Wi-Fi as it would to an
 
 ## What it does
 
-It covers about three quarters of Minetest Game so far: 29 of its 34 mods, with boats, carts, butterflies, fireflies and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
+It covers most of Minetest Game: 29 of its 34 mods, with boats, carts, butterflies, fireflies and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
 
 - **[The world](docs/features.md#the-world):** Minetest Game's biomes, from desert and savanna to tundra and icesheet, with hills, mountains, rivers, lakes, caves, lava, ores and dungeons with loot chests; day and night, weather, and fire that spreads (within limits the board can manage).
 - **[Trees, plants and farming](docs/features.md#trees-plants-and-farming):** forests that grow back from saplings, flowers, bushes, kelp and corals, grass that spreads, and wheat and cotton to farm.
@@ -29,7 +29,7 @@ It covers about three quarters of Minetest Game so far: 29 of its 34 mods, with 
 - **[The server](docs/features.md#the-server):** Luanti's protocol (5.17, protocol 53), SRP logins, chat with Luanti's [commands and privileges](docs/admin.md), saving as it goes so pulling the plug loses at most a few seconds.
 - **[The board](docs/features.md#the-board):** status pages on the LCD, and a status light.
 
-How it differs from a real Luanti server: no Lua mods (the game is built in), one world per SD card, six players at once on the board (15 by default on a PC), and only Luanti 5.17 clients have been tested. See [What doesn't (yet)](docs/features.md#what-doesnt-yet) for what's missing.
+How it differs from a real Luanti server: no Lua mods (the game is built in), one world per SD card, six players at once on the board (15 by default on a PC), and only Luanti 5.17 clients have been tested. See [What doesn't (yet)](docs/features.md#what-doesnt-yet) for what's still missing, and [What won't be done](docs/features.md#what-wont-be-done).
 
 ## Quick start
 

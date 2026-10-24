@@ -1,6 +1,6 @@
 # Features
 
-What the server does, as of now. It covers about three quarters of Minetest Game (29 of its 34 mods); what it lacks is at the end, under [What doesn't (yet)](#what-doesnt-yet).
+What the server does, as of now. It covers most of Minetest Game (29 of its 34 mods); what is still missing is at the end, under [What doesn't (yet)](#what-doesnt-yet), and what never will be under [What won't be done](#what-wont-be-done).
 
 ![In game, connected to the ESP32 server](../assets/screen-002.png)
 
@@ -154,7 +154,24 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 
 ## What doesn't (yet)
 
-- Much of Minetest Game is still missing: boats, carts, butterflies and fireflies (with the bug net), and creative mode.
-- No Lua mods: the game content is built in.
-- One world per SD card (or in the board's flash).
-- Only tested with Luanti 5.17 clients. Older clients down to protocol 37 are accepted but untested.
+Five of Minetest Game's 34 mods are still to come:
+
+- **Boats:** wooden boats to row across water.
+- **Carts:** minecarts, with rails (plain, powered and brake rails) to run them on.
+- **Butterflies and fireflies:** the small creatures that flutter over grass and glow at night, and the bug net that catches them (fireflies in a bottle make a light).
+- **Creative mode:** the creative inventory, with every item to take, and digging without limits.
+
+(Boats and carts count as one mod each; butterflies and fireflies as two.)
+
+Smaller gaps in what is here:
+
+- **Particles:** none are sent, so there is no smoke or debris from TNT, and no puff when a dropped item burns.
+- **Lit TNT doesn't fall** if what is under it goes.
+- **Dirt with savanna grass** (Minetest Game's dirt_with_dry_grass) isn't there, so savanna grass on ordinary dirt doesn't spread.
+- **Untouched ground:** grass under a generated tree's trunk doesn't die back, and generated deep lava lights nothing; the server only looks at ground players have changed, to save the board's time.
+- **Clients:** only tested with Luanti 5.17. Older clients, down to protocol 37, are accepted but untested.
+
+## What won't be done
+
+- **Lua mods:** the server doesn't run Lua, so it can't load mods or other games. Minetest Game is built in, in Rust; anything new is added to the code.
+- **More than one world at a time:** one world per SD card (or in the board's flash). Swap cards for another world.
