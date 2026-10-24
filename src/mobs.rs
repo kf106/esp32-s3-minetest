@@ -93,10 +93,18 @@ const HOVER: (f32, f32) = (1.5, 4.0);
 /// attack_every (and a little) seconds, each cast taking CHANNEL; it
 /// blinks away from a player closer than BLINK_NEAR, at most every
 /// BLINK_EVERY.
-const KEEP: (f32, f32) = (6.0, 14.0);
+const KEEP: (f32, f32) = (4.5, 14.0);
 const CHANNEL: f32 = 0.75;
 const BLINK_NEAR: f32 = 4.0;
 const BLINK_EVERY: f32 = 8.0;
+/// How long a hexer tries to reach a new place to cast from.
+const GOAL_TIME: f32 = 4.0;
+/// How fast a hexer turns (degrees a second), and its head beyond its
+/// body (degrees either way). HEAD_SIGN: which way the model's head bone
+/// turns for a turn to the left.
+const TURN_RATE: f32 = 270.0;
+const HEAD_MAX: f32 = 70.0;
+const HEAD_SIGN: f32 = -1.0;
 pub const BLINK_SOUND: &str = "mobs_hexer_blink";
 /// A hex orb's speed across the ground, its gravity (floaty), how long it
 /// lasts, and how near it must pass a player to hit (generous).
@@ -114,6 +122,12 @@ const KNOCK_UP: f32 = 3.0;
 const ARMOR: f32 = 100.0;
 /// Resend a moving mob's position this often, to keep clients right.
 const RESYNC: f32 = 2.0;
+/// How much the velocity a mob wants (nodes per second) must differ from
+/// the one clients have before it changes to it (and they are told):
+/// smaller changes are let go, so it goes on as they think it does.
+const TURN: f32 = 0.4;
+/// How long a flying mob reels from a hit.
+const STUN: f32 = 0.4;
 /// The night, when mobs spawn (time of day, 0 to 24000), and the day,
 /// when they sink back into the ground.
 pub fn dark(time_of_day: u16) -> bool {
@@ -293,14 +307,14 @@ pub const HEXER: Def = Def {
     flies: false,
     fuse: 0.0,
     burst: 0,
-    walk_speed: 1.2,
+    walk_speed: 1.0,
     run_speed: 2.6,
     view_range: 24.0,
     // Its orbs are thrown from up to this far.
     reach: 20.0,
     // An orb's damage, and how often it casts.
     damage: 4,
-    attack_every: 3.0,
+    attack_every: 4.0,
     flee_hp: 0,
     kills: "was hexed",
     chatter: "mobs_hexer_mutter",
@@ -415,9 +429,19 @@ pub fn animation_message(m: &Mob) -> Vec<u8> {
             Anim::Charge => messages::set_sprite_message([0, d.frames / 2], (d.frames / 2) as u16, 0.05),
             _ => messages::set_sprite_message([0, 0], (d.frames / 2) as u16, 0.15),
         }
+    } else if m.kind == Kind::Hexer && m.anim == Anim::Walk {
+        // A slow, stately walk.
+        messages::set_animation_message(Animation::new(messages::ANIM_WALK, messages::ANIM_FPS * 0.6))
     } else {
         messages::set_animation_message(animation(m.anim))
     }
+}
+
+/// The message turning a hexer's head `turn` degrees from its body (a
+/// bone override, which Luanti 5.9 and later clients follow; older ones
+/// leave the head be).
+pub fn head_message(m: &Mob) -> Vec<u8> {
+    messages::bone_rotation_message("Head", [0.0, HEAD_SIGN * m.head, 0.0], 0.3)
 }
 
 pub struct Mob {
@@ -458,14 +482,28 @@ pub struct Mob {
     /// Until it sinks, once it is day.
     dawn: Option<f32>,
     on_ground: bool,
-    /// Thrown by a hit: it flies where it was thrown until it lands.
+    /// Thrown by a hit: it flies where it was thrown until it lands (or,
+    /// flying, for `stun` seconds).
     thrown: bool,
-    /// The velocity clients last had (as they collide too, a part of it
-    /// may since have stopped), and when they had it.
+    stun: f32,
+    /// The velocity clients have (as they collide too, a part of it may
+    /// since have stopped), and when they were told it. The server moves
+    /// the mob at this velocity, just as they do, so they stay together;
+    /// a new velocity it wants is sent first, and only then followed.
     sent: [f32; 3],
     since_sent: f32,
     /// Clients need telling where it is (it turned to face a player).
     dirty: bool,
+    /// A hexer: how long it still watches its orb go, and where it goes
+    /// next to cast from.
+    watch: f32,
+    goal: Option<[f32; 2]>,
+    /// Where it was, and how it moved, when clients were last told, and
+    /// which way it faced.
+    report: ([f32; 3], [f32; 3]),
+    yaw_told: f32,
+    /// A hexer's head, turned from its body (degrees).
+    pub head: f32,
 }
 
 impl Mob {
@@ -510,6 +548,8 @@ pub enum Event {
     Drain(NodePos),
     /// A hexer blinks to where it now is.
     Blink(u16),
+    /// A hexer's head turns (Mob::head).
+    Head(u16),
     /// A hexer vanishes in a puff of smoke (Removed follows).
     Vanish(u16),
     Removed(u16),
@@ -636,9 +676,9 @@ impl Mobs {
             m.want = [0.0; 2];
             m.want_y = 0.0;
             m.thrown = true;
+            m.stun = STUN;
             m.on_ground = false;
-            m.sent = m.vel;
-            m.since_sent = 0.0;
+            tell(m);
             if let Some(player) = player {
                 m.target = Some(player);
                 m.unseen = 0.0;
@@ -688,7 +728,7 @@ impl Mobs {
             let id = self.new_id();
             let mut orb = new_mob(id, Kind::Orb, pos, u16::MAX, 0.0, rng);
             orb.vel = vel;
-            orb.sent = vel;
+            tell(&mut orb);
             orb.timer = ORB_LIFE;
             orb.state = State::Chase;
             self.list.push(orb);
@@ -804,9 +844,15 @@ fn new_mob(id: u16, kind: Kind, pos: [f32; 3], pack: u16, flank: f32, rng: &mut 
         dawn: None,
         on_ground: false,
         thrown: false,
+        stun: 0.0,
         sent: [0.0; 3],
         since_sent: 0.0,
         dirty: false,
+        watch: 0.0,
+        goal: None,
+        report: (pos, [0.0; 3]),
+        yaw_told: 0.0,
+        head: 0.0,
     }
 }
 
@@ -826,6 +872,46 @@ fn norm2(v: [f32; 2]) -> [f32; 2] {
 /// The yaw (degrees) of facing along `dir`.
 fn yaw_of(dir: [f32; 2]) -> f32 {
     (-dir[0]).atan2(dir[1]).to_degrees().rem_euclid(360.0)
+}
+
+/// How far apart two yaws are, in degrees (0 to 180).
+fn angle_between(a: f32, b: f32) -> f32 {
+    let d = (a - b).rem_euclid(360.0);
+    d.min(360.0 - d)
+}
+
+/// Turn from yaw `from` toward `to` by at most `most` degrees, the short
+/// way round.
+fn turn_toward(from: f32, to: f32, most: f32) -> f32 {
+    let d = (to - from + 540.0).rem_euclid(360.0) - 180.0;
+    (from + d.clamp(-most, most)).rem_euclid(360.0)
+}
+
+/// Where a body faces, going along `going` with its eye on `look` (both
+/// directions, either maybe not): the way it goes, bent towards what it
+/// watches by up to 60% of the angle between them while that is under 90
+/// degrees, less and less beyond, and not at all from 150 (going away, it
+/// turns its back); standing, towards what it watches.
+fn body_yaw(going: Option<[f32; 2]>, look: Option<[f32; 2]>) -> Option<f32> {
+    match (going, look) {
+        (Some(g), Some(l)) => {
+            let (go, see) = (yaw_of(g), yaw_of(l));
+            let a = (see - go + 540.0).rem_euclid(360.0) - 180.0;
+            let w = if a.abs() <= 90.0 { 0.6 } else { (0.6 * (150.0 - a.abs()) / 60.0).max(0.0) };
+            Some((go + a * w).rem_euclid(360.0))
+        }
+        (Some(g), None) => Some(yaw_of(g)),
+        (None, Some(l)) => Some(yaw_of(l)),
+        (None, None) => None,
+    }
+}
+
+/// How far a head turns from a body at `body` to look along `see`: all
+/// the way, up to HEAD_MAX either side.
+fn head_turn(body: f32, see: f32) -> f32 {
+    let a = (see - body + 540.0).rem_euclid(360.0) - 180.0;
+    let a = a.clamp(-HEAD_MAX, HEAD_MAX);
+    if a.abs() < 5.0 { 0.0 } else { (a / 5.0).round() * 5.0 }
 }
 
 /// The node a point is in.
@@ -898,8 +984,7 @@ fn think(m: &mut Mob, others: &[(u16, u16, [f32; 3])], players: &[Player], t: &d
             m.timer = SINK_TIME;
             m.vel = [0.0, -SINK_SPEED, 0.0];
             m.want = [0.0; 2];
-            m.sent = m.vel;
-            m.since_sent = 0.0;
+            tell(m);
             events.push(Event::Sinking(m.id));
             events.push(Event::Sound(m.id, d.sink, 0.6, 16.0, m.pos));
             return;
@@ -1093,8 +1178,7 @@ fn think_wisp(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: 
             m.state = State::Sinking;
             m.timer = SINK_TIME;
             m.vel = [0.0, SINK_SPEED, 0.0];
-            m.sent = m.vel;
-            m.since_sent = 0.0;
+            tell(m);
             m.anim = Anim::Stand;
             events.push(Event::Animated(m.id));
             events.push(Event::Sinking(m.id));
@@ -1225,10 +1309,10 @@ fn think_wisp(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: 
 }
 
 /// A hexer thinks: wanders muttering; once it sees a player, keeps its
-/// distance from them (backing off, closing in, or circling), and every
-/// few seconds, while it can see them, stops to cast: drawing the life
-/// from the ground at its feet, then lobbing an orb at them. A player who
-/// comes close, it blinks away from.
+/// distance from them, standing watching them, and every few seconds,
+/// while it can see them, casts: drawing the life from the ground at its
+/// feet, then lobbing an orb at them, which it watches half the way before
+/// moving a few nodes round them to cast from somewhere else. A player who comes close, it blinks away from.
 #[allow(clippy::too_many_arguments)]
 fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: &mut Rng, events: &mut Vec<Event>, casts: &mut Vec<([f32; 3], [f32; 3])>) {
     if m.hp == 0 {
@@ -1303,6 +1387,8 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
                     casts.push((from, orb_velocity(from, [p.pos[0], p.pos[1] + 1.0, p.pos[2]])));
                     events.push(Event::Drain(node_at([m.pos[0], m.pos[1] - 0.5, m.pos[2]])));
                     m.cooldown = d.attack_every + rng.range(0, 10) as f32 / 10.0;
+                    // It watches its orb go, half the way.
+                    m.watch = orb_flight_time(from, p.pos) / 2.0;
                 }
             } else if dist < BLINK_NEAR && m.fuse <= 0.0 {
                 // Too close: it blinks away.
@@ -1310,37 +1396,37 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
                     m.pos = to;
                     m.vel = [0.0; 3];
                     m.want = [0.0; 2];
-                    m.sent = [0.0; 3];
-                    m.since_sent = 0.0;
+                    tell(m);
                     m.fuse = BLINK_EVERY;
                     m.cooldown = m.cooldown.min(0.5);
+                    m.watch = 0.0;
+                    m.goal = None;
                     events.push(Event::Blink(m.id));
                     events.push(Event::Sound(m.id, BLINK_SOUND, 1.0, 24.0, m.pos));
                 }
-            } else {
-                if m.cooldown <= 0.0 && m.unseen == 0.0 && dist > 2.0 && dist <= d.reach && m.on_ground {
-                    m.swing = CHANNEL;
-                    anim = Anim::Attack;
-                    face = Some(dir);
+            } else if m.watch > 0.0 {
+                // Watching the orb, still.
+                m.want = [0.0; 2];
+                face = Some(dir);
+                m.watch -= THINK;
+                // Then it moves to cast from somewhere else.
+                if m.watch <= 0.0 {
+                    m.goal = Some(new_ground(m, p.pos, dist, rng));
+                    m.timer = GOAL_TIME;
+                }
+            } else if let Some(goal) = m.goal {
+                // On to a new place to cast from.
+                let to_goal = [goal[0] - m.pos[0], goal[1] - m.pos[2]];
+                m.timer -= THINK;
+                if to_goal[0].hypot(to_goal[1]) < 0.6 || m.timer <= 0.0 || m.stuck > 1.0 {
+                    m.goal = None;
                     m.want = [0.0; 2];
-                    events.push(Event::Sound(m.id, d.swipe, 1.0, 32.0, m.pos));
+                    face = Some(dir);
                 } else {
-                    // Keeping its distance, circling them.
-                    m.timer -= THINK;
-                    if m.timer <= 0.0 {
-                        m.timer = rng.range(2, 5) as f32;
-                        m.flank = if rng.one_in(2) { 1.0 } else { -1.0 };
-                    }
-                    let go = if dist < KEEP.0 {
-                        [-dir[0], -dir[1]]
-                    } else if dist > KEEP.1 {
-                        dir
-                    } else {
-                        [-dir[1] * m.flank, dir[0] * m.flank]
-                    };
-                    let speed = if dist < KEEP.0 || dist > KEEP.1 { d.run_speed } else { d.walk_speed };
-                    let mut go = norm2(go);
-                    if m.stuck > 0.75 && m.detour <= 0.0 {
+                    // Slowly and stately, unless it is backing off.
+                    let speed = if dist < KEEP.0 { d.run_speed } else { d.walk_speed };
+                    let mut go = norm2(to_goal);
+                    if m.stuck > 0.5 && m.detour <= 0.0 {
                         m.detour = 1.0;
                         m.detour_side = if rng.one_in(2) { 1.0 } else { -1.0 };
                     }
@@ -1349,11 +1435,22 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
                         go = [-go[1] * m.detour_side, go[0] * m.detour_side];
                     }
                     m.want = [go[0] * speed, go[1] * speed];
-                    anim = if speed > d.walk_speed { Anim::Run } else { Anim::Walk };
-                    if dist >= KEEP.0 && dist <= KEEP.1 {
-                        face = Some(dir);
-                    }
+                    anim = if speed >= d.run_speed { Anim::Run } else { Anim::Walk };
                 }
+            } else if dist < KEEP.0 || dist > KEEP.1 {
+                // Too near or too far: somewhere better.
+                m.goal = Some(new_ground(m, p.pos, dist, rng));
+                m.timer = GOAL_TIME;
+            } else if m.cooldown <= 0.0 && m.unseen == 0.0 && dist <= d.reach && m.on_ground {
+                m.swing = CHANNEL;
+                anim = Anim::Attack;
+                face = Some(dir);
+                m.want = [0.0; 2];
+                events.push(Event::Sound(m.id, d.swipe, 1.0, 32.0, m.pos));
+            } else {
+                // Standing, watching them, until it can cast again.
+                m.want = [0.0; 2];
+                face = Some(dir);
             }
         }
         _ => {
@@ -1391,15 +1488,25 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
             anim = Anim::Stand;
         }
     }
-    // It turns to face the way it goes, or the player (as it circles,
-    // or casts: tell clients, which only turn it the way it moves).
-    let facing = face.or((m.want != [0.0; 2]).then_some(m.want)).map(yaw_of);
-    if let Some(yaw) = facing {
-        let turn = (yaw - m.yaw).rem_euclid(360.0);
-        if face.is_some() && turn > 20.0 && turn < 340.0 {
+    // Its body faces the way it goes, bent towards the player it is after
+    // (or faces them, standing), turning no faster than TURN_RATE; its
+    // head turns further, to keep its eyes on them. Clients are told as
+    // it turns (they don't turn a hexer themselves).
+    let look = match (target, m.state) {
+        (Some(p), State::Chase) => Some(norm2([p.pos[0] - m.pos[0], p.pos[2] - m.pos[2]])),
+        _ => None,
+    };
+    let going = (m.want != [0.0; 2]).then_some(norm2(m.want));
+    if let Some(body) = body_yaw(going, look.or(face)) {
+        m.yaw = turn_toward(m.yaw, body, TURN_RATE * THINK);
+        if angle_between(m.yaw, m.yaw_told) > 10.0 {
             m.dirty = true;
         }
-        m.yaw = yaw;
+    }
+    let head = look.map_or(0.0, |l| head_turn(m.yaw, yaw_of(l)));
+    if (head - m.head).abs() > 8.0 || (head == 0.0 && m.head != 0.0) {
+        m.head = head;
+        events.push(Event::Head(m.id));
     }
     if anim != m.anim {
         m.anim = anim;
@@ -1415,6 +1522,21 @@ fn orb_velocity(from: [f32; 3], to: [f32; 3]) -> [f32; 3] {
     let time = (across / ORB_SPEED).max(0.3);
     let vy = (dy + 0.5 * ORB_GRAVITY * time * time) / time;
     [dx / time, vy.clamp(-10.0, 12.0), dz / time]
+}
+
+/// How long an orb thrown from `from` takes to reach a player at `to`.
+fn orb_flight_time(from: [f32; 3], to: [f32; 3]) -> f32 {
+    ((to[0] - from[0]).hypot(to[2] - from[2]) / ORB_SPEED).max(0.3)
+}
+
+/// A new place for a hexer to cast from: a few nodes (1.5 to 3) round the
+/// player at `p` from where it is, one way or the other, at a good
+/// distance (8 to 11 nodes).
+fn new_ground(m: &Mob, p: [f32; 3], dist: f32, rng: &mut Rng) -> [f32; 2] {
+    let now = (m.pos[2] - p[2]).atan2(m.pos[0] - p[0]);
+    let r = if dist < KEEP.0 || dist > KEEP.1 { rng.range(8, 11) as f32 } else { dist.clamp(8.0, 11.0) };
+    let turn = rng.range(15, 30) as f32 / 10.0 / r * if rng.one_in(2) { 1.0 } else { -1.0 };
+    [p[0] + (now + turn).cos() * r, p[2] + (now + turn).sin() * r]
 }
 
 /// Where a hexer blinks to: 4 to 8 nodes from where it is, away from the
@@ -1491,21 +1613,27 @@ fn fly(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bool {
         events.push(Event::Sound(m.id, d.death, 0.8, 16.0, m.pos));
         return true;
     }
+    // Decided before it moves, and clients told where it is as it does.
+    m.stun = (m.stun - dt).max(0.0);
+    let want = [m.want[0], m.want_y, m.want[1]];
+    let mut send = m.stun <= 0.0 && turns(m, want, true);
+    if send {
+        m.sent = want;
+    }
+    m.vel = m.sent;
+    let moving = m.vel.iter().any(|v| v.abs() > 0.01);
+    send |= m.dirty || (moving && m.since_sent >= RESYNC) || m.since_sent >= RESYNC * 4.0;
+    if send {
+        tell(m);
+        events.push(Event::Moved(m.id));
+    }
     let size = (d.half_width, d.height, d.below);
     let mut blocked = false;
     let mut time = 0.0;
     while time < dt {
         let step = STEP.min(dt - time);
         time += step;
-        if m.thrown {
-            // Knocked back: it slows, then goes on.
-            m.vel = m.vel.map(|v| v * 0.85);
-            if m.vel.iter().all(|v| v.abs() < 0.5) {
-                m.thrown = false;
-            }
-        } else {
-            m.vel = [m.want[0], m.want_y, m.want[1]];
-        }
+        m.vel = m.sent;
         for axis in [1, 0, 2] {
             let delta = m.vel[axis] * step;
             if delta != 0.0 && move_axis(&mut m.pos, axis, delta, size, t) {
@@ -1516,14 +1644,6 @@ fn fly(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bool {
         }
     }
     m.stuck = if blocked { m.stuck + dt } else { 0.0 };
-    let differs = (0..3).any(|i| (m.vel[i] - m.sent[i]).abs() > 0.05);
-    let moving = m.vel.iter().any(|v| v.abs() > 0.01);
-    if m.dirty || (differs && m.since_sent >= 0.2) || (moving && m.since_sent >= RESYNC) || m.since_sent >= RESYNC * 4.0 {
-        m.sent = m.vel;
-        m.since_sent = 0.0;
-        m.dirty = false;
-        events.push(Event::Moved(m.id));
-    }
     false
 }
 
@@ -1547,7 +1667,13 @@ fn safe_ahead(m: &Mob, t: &dyn Terrain) -> bool {
     false
 }
 
-/// Move a mob on by `dt`. Returns whether it is gone (sunk).
+/// Move a walking mob on by `dt`: at the velocity clients have for it
+/// (a new one it wants being sent first), falling, stopping against nodes,
+/// jumping up a node. Returns whether it is gone (sunk, or vanished).
+///
+/// Every change is decided before it moves, and clients are told where it
+/// is as it does: they show it a step later than the server has it, but
+/// moving exactly as it does, so it never jumps about on their screens.
 fn physics(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bool {
     m.since_sent += dt;
     if m.hp == 0 {
@@ -1559,18 +1685,36 @@ fn physics(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bo
         return m.timer <= 0.0;
     }
     let d = m.def();
+    let mut send = false;
+    if !m.thrown && turns(m, [m.want[0], m.sent[1], m.want[1]], false) {
+        m.sent[0] = m.want[0];
+        m.sent[2] = m.want[1];
+        send = true;
+    }
+    if !m.thrown {
+        m.vel[0] = m.sent[0];
+        m.vel[2] = m.sent[2];
+    }
+    // Against a one-node step with room above: jump.
+    if m.stuck > 0.0 && m.on_ground && m.want != [0.0; 2] && can_jump(m, t) {
+        m.vel = [m.want[0], JUMP_SPEED, m.want[1]];
+        m.sent = m.vel;
+        m.on_ground = false;
+        m.stuck = 0.0;
+        send = true;
+    }
+    let moving = m.vel[0] != 0.0 || m.vel[2] != 0.0;
+    send |= m.dirty || ((moving || !m.on_ground) && m.since_sent >= RESYNC) || m.since_sent >= RESYNC * 4.0;
+    if send {
+        tell(m);
+        events.push(Event::Moved(m.id));
+    }
     let size = (d.half_width, d.height, d.below);
     let mut blocked = false;
-    let mut jumped = false;
     let mut time = 0.0;
     while time < dt {
         let step = STEP.min(dt - time);
         time += step;
-        // It goes the way it wants, unless thrown.
-        if !m.thrown {
-            m.vel[0] = m.want[0];
-            m.vel[2] = m.want[1];
-        }
         m.vel[1] -= messages::GRAVITY * step;
         let mut landed = false;
         for axis in [1, 0, 2] {
@@ -1589,28 +1733,34 @@ fn physics(m: &mut Mob, dt: f32, t: &dyn Terrain, events: &mut Vec<Event>) -> bo
         if landed {
             m.thrown = false;
         }
-        // Against a one-node step with room above: jump.
-        if blocked && m.on_ground && m.want != [0.0; 2] && can_jump(m, t) {
-            m.vel[1] = JUMP_SPEED;
-            m.vel[0] = m.want[0];
-            m.vel[2] = m.want[1];
-            m.on_ground = false;
-            jumped = true;
-        }
     }
     if m.pos[1] < -2000.0 {
         return true;
     }
-    m.stuck = if blocked && !jumped { m.stuck + dt } else { 0.0 };
-    let moving = m.want != [0.0; 2];
-    let differs = (m.vel[0] - m.sent[0]).abs() > 0.05 || (m.vel[2] - m.sent[2]).abs() > 0.05;
-    if jumped || m.dirty || (differs && !blocked && m.since_sent >= 0.2) || ((moving || !m.on_ground) && m.since_sent >= RESYNC) || m.since_sent >= RESYNC * 4.0 {
-        m.sent = m.vel;
-        m.since_sent = 0.0;
-        m.dirty = false;
-        events.push(Event::Moved(m.id));
-    }
+    m.stuck = if blocked { m.stuck + dt } else { 0.0 };
     false
+}
+
+/// What clients are told now: where the mob is, and how it moves.
+fn tell(m: &mut Mob) {
+    m.sent = m.vel;
+    m.report = (m.pos, m.vel);
+    m.yaw_told = m.yaw;
+    m.since_sent = 0.0;
+    m.dirty = false;
+}
+
+/// Whether a mob changes to the velocity it now wants (and clients are
+/// told): when it is TURN or more from the one they have, or it starts or
+/// stops; not more than ten times a second, or once a second while it
+/// pushes against something. Vertical velocity counts only for flyers.
+fn turns(m: &Mob, want: [f32; 3], flies: bool) -> bool {
+    let axes: &[usize] = if flies { &[0, 1, 2] } else { &[0, 2] };
+    let change = axes.iter().map(|&i| (want[i] - m.sent[i]).powi(2)).sum::<f32>().sqrt();
+    let still = |v: [f32; 3]| axes.iter().all(|&i| v[i] == 0.0);
+    let starts_or_stops = still(want) != still(m.sent);
+    let gap = if m.stuck > 0.0 { 1.0 } else { 0.1 };
+    (change >= TURN || (starts_or_stops && change > 0.0)) && m.since_sent >= gap
 }
 
 fn can_jump(m: &Mob, t: &dyn Terrain) -> bool {
@@ -1760,20 +1910,31 @@ pub fn properties(m: &Mob, physical: bool) -> Vec<u8> {
         damage_texture_modifier: if sprite { "^[brighten" } else { "^[colorize:#ff000060" },
         zoom_fov: 0.0,
         spritediv: if sprite { [1, d.frames.max(1)] } else { [1, 1] },
-        face_movement: if sprite { None } else { Some(-90.0) },
+        // A hexer turns as it is told (to keep its eyes on a player as it
+        // moves); others turn the way they go.
+        face_movement: if sprite || m.kind == Kind::Hexer { None } else { Some(-90.0) },
         use_texture_alpha: sprite,
     })
 }
 
-/// Where it is and how it moves (with gravity, unless it flies or is
-/// going at dawn).
+/// Where it was and how it moved when clients were last told (with
+/// gravity, unless it flies or is going at dawn).
 pub fn position(m: &Mob) -> Vec<u8> {
+    position_message(m, m.report.0, m.report.1)
+}
+
+/// Where it is now and how it moves: for a client seeing it first.
+pub fn position_now(m: &Mob) -> Vec<u8> {
+    position_message(m, m.pos, m.vel)
+}
+
+fn position_message(m: &Mob, pos: [f32; 3], vel: [f32; 3]) -> Vec<u8> {
     let acc = match m.kind {
         Kind::Orb => [0.0, -ORB_GRAVITY * 10.0, 0.0],
         _ if m.state == State::Sinking || m.def().flies => [0.0; 3],
         _ => [0.0, -messages::GRAVITY * 10.0, 0.0],
     };
-    messages::object_position_message(m.pos_bs(), m.vel.map(|v| v * 10.0), acc, m.yaw)
+    messages::object_position_message(pos.map(|v| v * 10.0), vel.map(|v| v * 10.0), acc, m.yaw)
 }
 
 /// What a client needs to show a mob.
@@ -1783,8 +1944,12 @@ pub fn init_data(m: &Mob) -> Vec<u8> {
         messages::armor_groups_message(),
         animation_message(m),
         messages::not_attached_message(),
-        position(m),
+        position_now(m),
     ];
+    let mut messages = messages.to_vec();
+    if m.head != 0.0 {
+        messages.push(head_message(m));
+    }
     messages::entity_init_data(m.def().name, m.id, m.pos_bs(), m.yaw, m.hp, &messages)
 }
 
@@ -2061,6 +2226,33 @@ mod tests {
         assert!(drains >= 2 && orbs == drains, "{drains} drains, {orbs} orbs");
         assert!(hits >= 1, "{hits} hits of {orbs} orbs");
         assert!(ev.iter().any(|e| matches!(e, Event::Sound(_, s, _, _, _) if *s == HEXER.call)));
+        // Having cast, it stands watching its orb a while before moving on.
+        let mut stills = Vec::new();
+        for _ in 0..3 {
+            let ev = run(&mut mobs, &t, &player, 8.0, &mut rng);
+            let _ = ev;
+        }
+        let mut cast_at: Option<usize> = None;
+        let mut moved_after = Vec::new();
+        let mut last = mobs.get(FIRST_ID).unwrap().pos;
+        for i in 0..400 {
+            let ev = mobs.step(0.05, &t, &player, false, &mut rng);
+            let now = mobs.get(FIRST_ID).unwrap().pos;
+            if ev.iter().any(|e| matches!(e, Event::Drain(_))) {
+                cast_at = Some(i);
+            }
+            if let Some(c) = cast_at {
+                if i > c && dist2(now, last) > 1e-6 {
+                    moved_after.push(i - c);
+                    cast_at = None;
+                }
+            }
+            stills.push(dist2(now, last) < 1e-6);
+            last = now;
+        }
+        assert!(!moved_after.is_empty() && moved_after.iter().all(|&n| n >= 10), "moved {moved_after:?} steps after casting");
+        let still = stills.iter().filter(|s| **s).count() as f32 / stills.len() as f32;
+        assert!(still > 0.4, "still only {still}");
         // It keeps its distance.
         let m = mobs.get(FIRST_ID).unwrap();
         let d = dist2(m.pos, player[0].pos).sqrt();
@@ -2103,6 +2295,89 @@ mod tests {
         assert_eq!(drained(content::CONTENT_GRASS), Some((content::CONTENT_DIRT, 0)));
         assert_eq!(drained(content::CONTENT_STONE), None);
         assert_eq!(drained(content::DRY_SHRUB), None);
+    }
+
+    /// What a client does with a mob between updates: moves it on at the
+    /// velocity it was sent, with gravity (unless it flies), stopping
+    /// against nodes. How far it is from where the server has it when the
+    /// next update comes is how far the mob jumps on screen.
+    fn worst_jump(kind: Kind, t: &Flat, player: Player, secs: f32) -> f32 {
+        let mut rng = Rng::new();
+        let mut mobs = Mobs::new();
+        let start = if kind == Kind::Wisp { [0.0, 2.0, 0.0] } else { [0.0, 0.5, 0.0] };
+        mobs.add_pack(kind, &[start], &mut rng);
+        let id = FIRST_ID;
+        let d = def(kind);
+        let size = (d.half_width, d.height, d.below);
+        let (mut pos, mut vel) = (start, [0.0f32; 3]);
+        let mut worst = 0.0f32;
+        for _ in 0..(secs / 0.05) as usize {
+            // The client has the mob where it thinks it was as this step
+            // began (it shows it a step late).
+            let ev = mobs.step(0.05, t, &[player], false, &mut rng);
+            let Some(m) = mobs.get(id) else {
+                break;
+            };
+            // An update: what it says, against where the client had it.
+            if ev.contains(&Event::Moved(id)) {
+                worst = worst.max(dist2(pos, m.report.0).sqrt());
+                pos = m.report.0;
+                vel = m.report.1;
+            }
+            // The client's own step.
+            if !d.flies {
+                vel[1] -= messages::GRAVITY * 0.05;
+            }
+            for axis in [1, 0, 2] {
+                let delta = vel[axis] * 0.05;
+                if delta != 0.0 && move_axis(&mut pos, axis, delta, size, t) {
+                    vel[axis] = 0.0;
+                }
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn clients_keep_up() {
+        // A mossling chasing over flat ground and up a step, a wisp coming
+        // in: what clients show is never more than a little off.
+        let mut t = Flat::new();
+        for z in -20..=20 {
+            t.walls.push((5, 1, z));
+        }
+        let far = Player { id: 2, pos: [12.0, 1.5, 6.0], alive: true };
+        for _ in 0..10 {
+            let j = worst_jump(Kind::Mossling, &t, far, 8.0);
+            assert!(j < 0.05, "mossling jumps {j}");
+            let j = worst_jump(Kind::Hexer, &t, Player { pos: [12.0, 1.5, 6.0], ..far }, 8.0);
+            assert!(j < 0.05, "hexer jumps {j}");
+            let j = worst_jump(Kind::Wisp, &Flat::new(), Player { pos: [15.0, 0.5, 4.0], ..far }, 4.0);
+            assert!(j < 0.05, "wisp jumps {j}");
+        }
+    }
+
+    #[test]
+    fn facing() {
+        let east = [1.0, 0.0];
+        let north = [0.0, 1.0];
+        let west = [-1.0, 0.0];
+        // Standing: towards what it watches; going towards it: that way.
+        assert_eq!(body_yaw(None, Some(north)), Some(yaw_of(north)));
+        assert_eq!(body_yaw(Some(north), Some(north)), Some(yaw_of(north)));
+        // Going sideways: 60% of the way round to what it watches.
+        let side = body_yaw(Some(east), Some(north)).unwrap();
+        assert!((angle_between(side, yaw_of(north)) - 36.0).abs() < 0.5, "{side}");
+        // Going away: its back to it.
+        assert_eq!(body_yaw(Some(west), Some(east)), Some(yaw_of(west)));
+        // Turning: at most so far, the short way.
+        assert_eq!(turn_toward(350.0, 20.0, 67.5), 20.0);
+        assert_eq!(turn_toward(0.0, 180.0 - 1.0, 67.5), 67.5);
+        assert_eq!(turn_toward(10.0, 300.0, 30.0), 340.0);
+        // Its head: as far as it can, in steps of 5 degrees.
+        assert_eq!(head_turn(0.0, 180.0), -70.0);
+        assert_eq!(head_turn(0.0, 42.0), 40.0);
+        assert_eq!(head_turn(0.0, 3.0), 0.0);
     }
 
     #[test]

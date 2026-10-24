@@ -4926,6 +4926,11 @@ impl Server {
                 Event::Sound(id, sound, gain, range, pos) => self.mob_sound(id, sound, gain, range, pos),
                 Event::Fuse(id, lit) => self.mob_fuse(id, lit),
                 Event::Drain(feet) => self.drain_land(feet),
+                Event::Head(id) => {
+                    if let Some(m) = self.mobs.get(id) {
+                        messages.push((id, mobs::head_message(m)));
+                    }
+                }
                 Event::Blink(id) => {
                     if let Some(m) = self.mobs.get(id) {
                         messages.push((id, mobs::position(m)));

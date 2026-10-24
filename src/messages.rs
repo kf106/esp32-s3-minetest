@@ -576,6 +576,7 @@ pub const ACTIVEOBJECT_TYPE_GENERIC: u8 = 101;
 const AO_CMD_SET_PROPERTIES: u8 = 0;
 const AO_CMD_UPDATE_POSITION: u8 = 1;
 const AO_CMD_SET_ANIMATION: u8 = 6;
+const AO_CMD_SET_BONE_POSITION: u8 = 7;
 const AO_CMD_UPDATE_ARMOR_GROUPS: u8 = 5;
 const AO_CMD_ATTACH_TO: u8 = 8;
 const AO_CMD_SET_PHYSICS_OVERRIDE: u8 = 9;
@@ -1030,6 +1031,22 @@ pub fn punched_message(hp: u16) -> Vec<u8> {
 pub fn set_sprite_message(start: [i16; 2], frames: u16, frame_length: f32) -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_SET_SPRITE).i16(start[0]).i16(start[1]).u16(frames).f32(frame_length).u8(0);
+    w.into_inner()
+}
+
+/// AO_CMD_SET_BONE_POSITION in the >= 5.9 form: turn a bone of the model
+/// by `rotation` (degrees) beyond what its animation does, getting there
+/// over `over` seconds; position and scale left to the animation.
+pub fn bone_rotation_message(bone: &str, rotation: [f32; 3], over: f32) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_SET_BONE_POSITION).string16(bone);
+    for v in [0.0, 0.0, 0.0].into_iter().chain(rotation).chain([1.0, 1.0, 1.0]) {
+        w.f32(v);
+    }
+    w.f32(0.0) // position: at once
+        .f32(over) // rotation
+        .f32(0.0) // scale
+        .u8(0); // all relative to the animation
     w.into_inner()
 }
 

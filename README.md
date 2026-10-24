@@ -71,6 +71,7 @@ See [docs/pc.md](docs/pc.md) for the options and running it as a service.
 - [Administrator and privileges](docs/admin.md): the chat commands.
 - [Development](docs/development.md): the project layout, testing, load testing and notes for hackers. The tests have their own [README](tests/README.md).
 - [Licences](docs/licences.md): the code's and the media's.
+- [Security policy](SECURITY.md): what counts as a vulnerability, and how to report one privately.
 
 ## Licence
 
