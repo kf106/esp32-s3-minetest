@@ -377,7 +377,7 @@ pub fn def(kind: Kind) -> &'static Def {
 pub fn drained(id: u16) -> Option<(u16, u8)> {
     use content::*;
     match id {
-        CONTENT_GRASS | CONTENT_LITTER | CONTENT_CONIFEROUS_LITTER => Some((CONTENT_DIRT, 0)),
+        CONTENT_GRASS | CONTENT_LITTER | CONTENT_CONIFEROUS_LITTER | CONTENT_DIRT_DRY_GRASS => Some((CONTENT_DIRT, 0)),
         CONTENT_DRY_GRASS => Some((CONTENT_DRY_DIRT, 0)),
         CONTENT_PERMAFROST_MOSS => Some((CONTENT_PERMAFROST, 0)),
         id if id != DRY_SHRUB && group_of(id, "flora") > 0 => Some((DRY_SHRUB, DRY_SHRUB_PARAM2)),

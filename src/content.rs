@@ -229,6 +229,9 @@ pub const CONTENT_ACACIA_SAPLING: u16 = 157;
 pub const CONTENT_DRY_DIRT: u16 = 158;
 pub const CONTENT_DRY_GRASS: u16 = 159;
 pub const CONTENT_LITTER: u16 = 160;
+/// minetest_game's dirt with savanna grass: what savanna grass makes of
+/// ordinary dirt under it, spreading from there (after the insects).
+pub const CONTENT_DIRT_DRY_GRASS: u16 = crate::insects::FIREFLY_BOTTLE + 1;
 /// minetest_game's other ores and their blocks, after the plants.
 pub const CONTENT_COPPER: u16 = 211;
 pub const CONTENT_TIN: u16 = 212;
@@ -3216,6 +3219,24 @@ pub const NODES: &[Node] = &[
         drop: insects::FIREFLY_BOTTLE,
         drop_count: 1,
         kind: Kind::Vessel,
+    },    // minetest_game's dirt with savanna grass, which savanna grass makes
+    // of dirt (nature.rs).
+    Node {
+        id: CONTENT_DIRT_DRY_GRASS,
+        name: "esp:dirt_with_dry_grass",
+        description: "Dirt with Savanna Grass",
+        tiles: [
+            "default_dry_grass.png",
+            "esp_dirt.png",
+            "esp_dirt.png^default_dry_grass_side.png",
+            "esp_dirt.png^default_dry_grass_side.png",
+            "esp_dirt.png^default_dry_grass_side.png",
+            "esp_dirt.png^default_dry_grass_side.png",
+        ],
+        groups: &[("crumbly", 3), ("soil", 1), ("spreading_dirt_type", 1)],
+        drop: CONTENT_DIRT,
+        drop_count: 1,
+        kind: Kind::Solid,
     },
 ];
 
@@ -5368,7 +5389,7 @@ fn sounds_of(id: u16) -> Sounds {
         CONTENT_PERMAFROST_MOSS | CONTENT_CONIFEROUS_LITTER => dirt(("default_grass_footstep", 0.25)),
         CONTENT_DESERT_SAND | CONTENT_SILVER_SAND => sounds_of(CONTENT_SAND),
         // minetest_game's savanna grass and rainforest litter: grass steps.
-        CONTENT_DRY_GRASS | CONTENT_LITTER => dirt(("default_grass_footstep", 0.4)),
+        CONTENT_DRY_GRASS | CONTENT_LITTER | CONTENT_DIRT_DRY_GRASS => dirt(("default_grass_footstep", 0.4)),
         CONTENT_DRY_DIRT => dirt(("default_dirt_footstep", 0.25)),
         CONTENT_SAND => Sounds {
             footstep: ("default_sand_footstep", 0.05),

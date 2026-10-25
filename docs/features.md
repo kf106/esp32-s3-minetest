@@ -51,7 +51,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 
 - **Trees, as in Minetest Game:** chop a tree's trunk away and its leaves fall within a few seconds (leaves you placed yourself never do). Leaves give a sapling one time in 20, dug or fallen. Plant a sapling on dirt, grass, savanna dirt or leaf litter in the open and it grows into a birch, fir, apple, jungle or acacia tree after 5 to 25 minutes, in daylight. Nine jungle saplings make an emergent jungle tree sapling, which grows into an emergent jungle tree.
 - **Apples and health:** apple trees carry apples. Pick one (punch it) and eat it (left-click with it) for 2 HP; health only comes back by eating, as in Minetest Game. A picked apple grows again in the same place after 5 to 25 minutes while the tree's leaves are there; apples fall with the leaves when the tree is chopped.
-- **Grass:** as in Minetest Game, grass spreads onto bare dirt beside it in daylight (dig a grass block and the dirt under it greens over), and so do forest litter and snowy dirt; tall grass or snow on bare dirt seeds it too. Grass under anything that keeps out the light, or under water, dies back to dirt (savanna grass to savanna dirt). As Minetest Game's, it is checked every 6 s (spreading) and 8 s (dying), one time in 50, within 4 map blocks of a player. Unlike Minetest Game, only ground that players have changed (and what is next to it) is looked at, so a generated tree's trunk doesn't kill the grass under it.
+- **Grass:** as in Minetest Game, grass spreads onto bare dirt beside it in daylight (dig a grass block and the dirt under it greens over), and so do forest litter and snowy dirt; tall grass or snow on bare dirt seeds it too, and savanna grass on bare dirt makes dirt with savanna grass, which spreads in turn. Grass under anything that keeps out the light, or under water, dies back to dirt (savanna grass to savanna dirt). As Minetest Game's, it is checked every 6 s (spreading) and 8 s (dying), one time in 50, within 4 map blocks of a player. Unlike Minetest Game, only ground that players have changed (and what is next to it) is looked at (see What won't be done).
 - **Flowers, dyes and wool, as in Minetest Game:**
   - Eight flowers grow in patches on the grassland (red rose, orange tulip, yellow and white dandelions, green chrysanthemum, blue geranium, viola, black tulip), mushrooms in the woods, and waterlilies on the swampy lakes of the rainforest and savanna. A waterlily goes back only on still water.
   - A brown mushroom heals 1 HP; a red one costs 5.
@@ -69,7 +69,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
   - A firefly over a glass bottle makes a **firefly in a bottle**, a light (9). Right-click it and the firefly flies out, leaving the empty bottle.
 - **Farming:** Minetest Game's wheat and cotton.
   - Tall grass grows on grassland; digging it gives a wheat seed one time in five. Jungle grass in the rainforest gives a cotton seed one time in eight. Wild cotton grows in patches on grassland and savanna and gives cotton seeds.
-  - A hoe (two planks, stones or steel ingots over two sticks, like Minetest Game's) turns dirt, grass or forest litter into soil with a left-click, savanna dirt (with or without its grass) into savanna soil, and desert sand into desert sand soil (which falls like sand). Soil within 3 nodes of water turns wet; without water it dries, and bare dry soil turns back into its dirt or sand.
+  - A hoe (two planks, stones or steel ingots over two sticks, like Minetest Game's) turns dirt, grass (or savanna grass on dirt) or forest litter into soil with a left-click, savanna dirt (with or without its grass) into savanna soil, and desert sand into desert sand soil (which falls like sand). Soil within 3 nodes of water turns wet; without water it dries, and bare dry soil turns back into its dirt or sand.
   - Plant seeds on soil. They sprout, then grow through 8 stages, a stage every 3 to 5 minutes, but only on wet soil in daylight. Dig a crop when ripe for one or two of the harvest and of seeds; earlier gives less.
   - 4 wheat make flour, which bakes into bread in the furnace (15 s); bread heals 5. 9 wheat make 3 straw blocks, and back. 4 cotton make white wool, 2 make 2 string.
 
@@ -184,11 +184,10 @@ Two of Minetest Game's 34 mods are still to come:
 Smaller gaps in what is here:
 
 - **Lit TNT doesn't fall** if what is under it goes.
-- **Dirt with savanna grass** (Minetest Game's dirt_with_dry_grass) isn't there, so savanna grass on ordinary dirt doesn't spread.
-- **Untouched ground:** grass under a generated tree's trunk doesn't die back, and generated deep lava lights nothing; the server only looks at ground players have changed, to save the board's time.
 - **Clients:** only tested with Luanti 5.17. Older clients, down to protocol 37, are accepted but untested.
 
 ## What won't be done
 
+- **Untouched generated ground:** grass under a generated tree's trunk doesn't die back, and generated deep lava gives no light. The server only looks at ground players have changed, to save the board's time.
 - **Lua mods:** the server doesn't run Lua, so it can't load mods or other games. Minetest Game is built in, in Rust; anything new is added to the code.
 - **More than one world at a time:** one world per SD card (or in the board's flash). Swap cards for another world.

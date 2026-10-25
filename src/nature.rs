@@ -300,7 +300,12 @@ mod grass_tests {
         assert_eq!(spread_onto(CONTENT_AIR, Some(CONTENT_LITTER)), Some(CONTENT_LITTER));
         assert_eq!(spread_onto(CONTENT_SNOW_LAYER, None), Some(CONTENT_SNOW));
         assert_eq!(spread_onto(crate::farming::GRASS[2], None), Some(CONTENT_GRASS));
-        assert_eq!(spread_onto(crate::farming::DRY_GRASS[0], None), None);
+        // Savanna grass on dirt: dirt with savanna grass, which spreads
+        // in turn, and goes back to dirt when covered.
+        assert_eq!(spread_onto(crate::farming::DRY_GRASS[0], None), Some(content::CONTENT_DIRT_DRY_GRASS));
+        assert!(spreads(content::CONTENT_DIRT_DRY_GRASS));
+        assert_eq!(spread_onto(CONTENT_AIR, Some(content::CONTENT_DIRT_DRY_GRASS)), Some(content::CONTENT_DIRT_DRY_GRASS));
+        assert_eq!(covered(content::CONTENT_DIRT_DRY_GRASS, CONTENT_STONE), Some(CONTENT_DIRT));
         assert_eq!(spread_onto(CONTENT_AIR, None), None);
         assert!(lets_grass_in(CONTENT_AIR) && !lets_grass_in(CONTENT_STONE));
         // Covered by stone or water: dirt. Under glass, a torch, a slab or
@@ -506,8 +511,7 @@ pub fn lets_grass_in(id: u16) -> bool {
 
 /// What dirt becomes when grass spreads onto it: the first spreading
 /// neighbour's kind; else, by what is on top, snowy dirt under snow or
-/// grass under tall grass. (Under savanna grass minetest_game makes dirt
-/// with savanna grass, which isn't here: nothing.)
+/// dirt with savanna grass under savanna grass, or grass under tall grass.
 pub fn spread_onto(above: u16, beside: Option<u16>) -> Option<u16> {
     if let Some(id) = beside {
         return Some(id);
@@ -515,7 +519,7 @@ pub fn spread_onto(above: u16, beside: Option<u16>) -> Option<u16> {
     if above == CONTENT_SNOW_LAYER {
         Some(CONTENT_SNOW)
     } else if content::group_of(above, "dry_grass") > 0 {
-        None
+        Some(content::CONTENT_DIRT_DRY_GRASS)
     } else if content::group_of(above, "grass") > 0 {
         Some(CONTENT_GRASS)
     } else {

@@ -149,7 +149,7 @@ pub fn climb(pos: NodePos, node: &dyn Fn(NodePos) -> u16, lit: &dyn Fn(NodePos) 
     let ground_ok = match id {
         CACTUS => group_of(below, "sand") > 0,
         PAPYRUS => {
-            matches!(below, CONTENT_DIRT | CONTENT_GRASS | CONTENT_DRY_GRASS | CONTENT_LITTER | CONTENT_DRY_DIRT) && {
+            matches!(below, CONTENT_DIRT | CONTENT_GRASS | CONTENT_DRY_GRASS | CONTENT_LITTER | CONTENT_DRY_DIRT | CONTENT_DIRT_DRY_GRASS) && {
                 let (x, y, z) = (pos.0, pos.1 - 1, pos.2);
                 let r = PAPYRUS_WATER;
                 (-r..=r).any(|dy| (-r..=r).any(|dz| (-r..=r).any(|dx| crate::farming::is_water(node((x + dx, y + dy, z + dz))))))

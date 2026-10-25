@@ -124,7 +124,7 @@ pub fn is_wet_soil(id: u16) -> bool {
 /// soil, and desert sand desert sand soil.
 pub fn hoed(id: u16) -> Option<u16> {
     match id {
-        CONTENT_DIRT | CONTENT_GRASS | CONTENT_LITTER | CONTENT_CONIFEROUS_LITTER => Some(SOIL),
+        CONTENT_DIRT | CONTENT_GRASS | CONTENT_LITTER | CONTENT_CONIFEROUS_LITTER | CONTENT_DIRT_DRY_GRASS => Some(SOIL),
         CONTENT_DRY_DIRT | CONTENT_DRY_GRASS => Some(DRY_SOIL),
         CONTENT_DESERT_SAND => Some(DESERT_SAND_SOIL),
         _ => None,

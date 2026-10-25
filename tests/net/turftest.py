@@ -7,7 +7,7 @@ exec(src[:src.index("port = int(sys.argv[1])")])
 port = int(sys.argv[1])
 players = os.path.join(os.environ["TEST_WORLD"], "players")
 os.makedirs(players, exist_ok=True)
-open(os.path.join(players, "gardener.inv"), "w").write("kit 1\n0 esp:shovel_steel 1\n1 esp:stone 9\n2 esp:dirt 9\n")
+open(os.path.join(players, "gardener.inv"), "w").write("kit 1\n0 esp:shovel_steel 1\n1 esp:stone 9\n2 esp:dirt 9\n3 esp:dry_grass_1 1\n")
 def interact(cl, action, item, under, above):
     pointed = struct.pack(">BB3h3h", 0, 1, *under, *above)
     p = [int(v * 100) for v in cl.pos_bs]
@@ -34,4 +34,15 @@ c.cmds.clear(); interact(c, 3, 2, (12, 2, 12), (12, 3, 12))
 assert becomes(c, (12, 3, 12)) == DIRT
 assert becomes(c, (12, 3, 12)) == GRASS; print("placed dirt grew grass")
 c.pump(3); assert not any(struct.unpack_from(">hhh", m, 2) == (11, 2, 11) for m in c.take(0x21))
+# Savanna grass on dirt (up on stone, away from any grass): dirt with
+# savanna grass, which spreads to dirt beside it.
+for z in (13, 14):
+    c.cmds.clear(); interact(c, 3, 1, (8, 2, z), (8, 3, z)); becomes(c, (8, 3, z))
+c.cmds.clear(); interact(c, 3, 2, (8, 3, 13), (8, 4, 13)); assert becomes(c, (8, 4, 13)) == DIRT
+c.cmds.clear(); interact(c, 3, 3, (8, 4, 13), (8, 5, 13)); becomes(c, (8, 5, 13))
+SAVANNA = becomes(c, (8, 4, 13)); print("under savanna grass, dirt became", SAVANNA)
+assert SAVANNA not in (DIRT, GRASS)
+c.cmds.clear(); interact(c, 3, 2, (8, 3, 14), (8, 4, 14))
+assert becomes(c, (8, 4, 14)) == DIRT
+assert becomes(c, (8, 4, 14)) == SAVANNA; print("and spread to the dirt beside it")
 c.raw(0, b"\x00\x03"); time.sleep(0.3); print("TURF OK")
