@@ -15,6 +15,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 - **Chat:** with Luanti's usual limits (500 characters, 8 messages per 10 seconds, commands included), and Luanti's chat commands: see [Administrator and privileges](admin.md).
 - **Changing your password:** from the client's own Change Password dialogue.
 - **World storage:** the world is generated on demand from a fixed seed. Only the changes players make are stored, as an append-only log on the SD card. Writing to the card is slow, so changes are appended once a second, and an inventory is saved within 5 s of changing (and when its player leaves): a power cut loses at most that much. Saving after every dig once held the server up so much that a player digging fast was disconnected.
+- **Particles:** as Minetest Game and Luanti's own game code send them: bits of a node flying as another player digs it (your client makes its own), leaves falling apart as they decay, a puff of smoke as a dropped item burns up, and TNT's flash, smoke and debris. And for the mobs: soil spraying as a mossling sinks, sparks from a wisp as its fuse burns, smoke as a hexer blinks, and a glowing trail behind its orbs. Each is a single message; the client draws them. Players within 64 nodes get them, on clients from Luanti 5.6 on.
 - **Saving:** player positions, health, skins and inventories are saved and restored. So are dropped items (they fall back to the ground after a restart, keeping how long they have left) and the time of day, so a restart carries on where the game was. The board is usually stopped by pulling the plug, so the time is saved every minute and items 10 seconds after they change: at most that much is lost.
 
 ## The world
@@ -42,7 +43,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
   - **TNT** is lit by a punch with a torch, flint and steel, a flame or lava beside it, burning gunpowder, or another blast. It hisses for 4 s, then explodes: everything within about 3 nodes is destroyed and thrown out as items (stone as cobblestone, and so on), flammable things catch fire, gunpowder in the blast is lit and other TNT goes off a moment later, and sand and gravel above come down. TNT within 2 nodes of each other goes off together, in a bigger blast (8 together make a radius of 6, 27 a radius of 9). On the board 27 is as big as it gets: more go off with it, but make the blast no bigger, so that one blast doesn't hold the board up for long. On a PC, up to 125 (a 5×5×5 block: radius 15), as in Minetest Game. Players within twice the radius lose up to 12 HP, less further off, and are pushed away; dropped items are thrown.
   - Chests, furnaces and shelves in a blast are thrown out with what they hold. Locked chests, steel doors and trapdoors, open chests and bones are left alone, as in Minetest Game.
   - **Turning it off:** `/tnt off` (for a moderator with `ban`, or an admin with `server`) stops anything lighting TNT or gunpowder, and fire leaves them alone; TNT already lit goes out instead of off. `/tnt on` turns it back on, and `/tnt` says which it is. It is kept in `world/settings.txt` (Minetest Game's `enable_tnt`); TNT is on in a new world. Unlike Minetest Game, which has no TNT at all when it is off, the recipes stay.
-  - Unlike Minetest Game's, lit TNT doesn't fall, and the blast has no smoke or flying debris (the client is sent no particles).
+  - The blast flashes, and throws out a cloud of smoke and bits of what it blew up, as Minetest Game's does. Unlike Minetest Game's, lit TNT doesn't fall.
 - **Day and night:** a normal day and night cycle. Map blocks carry separate day and night light.
 - **Weather:** Minetest Game's `weather`. The clouds come and go over about ten minutes: how much of the sky they cover, how thick they are, and which way the wind takes them, all from slow noise, so every player sees the same sky; where the land is drier the clouds are fewer and thinner. With dynamic shadows on in the client, shadows are fainter the cloudier it is. Each player's sky is set when they join and every 8 s.
 
@@ -182,7 +183,6 @@ Three of Minetest Game's 34 mods are still to come:
 
 Smaller gaps in what is here:
 
-- **Particles:** none are sent, so there is no smoke or debris from TNT, no puff when a dropped item burns, no puff of soil as a mossling sinks, no sparks from a wisp, and no smoke from a hexer's blink or trail behind its orbs.
 - **Lit TNT doesn't fall** if what is under it goes.
 - **Dirt with savanna grass** (Minetest Game's dirt_with_dry_grass) isn't there, so savanna grass on ordinary dirt doesn't spread.
 - **Untouched ground:** grass under a generated tree's trunk doesn't die back, and generated deep lava lights nothing; the server only looks at ground players have changed, to save the board's time.

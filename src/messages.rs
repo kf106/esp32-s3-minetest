@@ -53,6 +53,8 @@ pub const TOCLIENT_NODEDEF: u16 = 0x3a;
 pub const TOCLIENT_ANNOUNCE_MEDIA: u16 = 0x3c;
 pub const TOCLIENT_ITEMDEF: u16 = 0x3d;
 pub const TOCLIENT_PLAY_SOUND: u16 = 0x3f;
+pub const TOCLIENT_ADD_PARTICLESPAWNER: u16 = 0x47;
+pub const TOCLIENT_DELETE_PARTICLESPAWNER: u16 = 0x53;
 pub const TOCLIENT_STOP_SOUND: u16 = 0x40;
 pub const TOCLIENT_PLAYER_SPEED: u16 = 0x2b;
 pub const TOCLIENT_FADE_SOUND: u16 = 0x55;
@@ -1262,6 +1264,106 @@ pub fn build_play_sound_object(id: i32, name: &str, gain: f32, pos_bs: [f32; 3],
         .f32(1.0) // pitch
         .u8((id < 0) as u8) // ephemeral
         .f32(0.0); // start time
+    w.into_inner()
+}
+
+/// A particle spawner (Lua's add_particlespawner): `amount` particles over
+/// `time` seconds (0: for ever, `amount` a second), each from a random
+/// point and with a random velocity, acceleration, life and size within
+/// these ranges (positions in nodes, relative to the object it is attached
+/// to, if any). A texture, or a node (id and param2) whose own texture the
+/// client breaks into bits.
+#[derive(Clone, Debug)]
+pub struct Particles<'a> {
+    pub amount: u16,
+    pub time: f32,
+    pub pos: ([f32; 3], [f32; 3]),
+    pub vel: ([f32; 3], [f32; 3]),
+    pub acc: ([f32; 3], [f32; 3]),
+    pub life: (f32, f32),
+    pub size: (f32, f32),
+    pub collide: bool,
+    pub texture: &'a str,
+    pub node: Option<(u16, u8)>,
+    pub glow: u8,
+    /// The object they come from (0: none).
+    pub attached: u16,
+}
+
+impl Default for Particles<'_> {
+    fn default() -> Self {
+        Self {
+            amount: 1,
+            time: 0.001,
+            pos: ([0.0; 3], [0.0; 3]),
+            vel: ([0.0; 3], [0.0; 3]),
+            acc: ([0.0; 3], [0.0; 3]),
+            life: (1.0, 1.0),
+            size: (1.0, 1.0),
+            collide: false,
+            texture: "",
+            node: None,
+            glow: 0,
+            attached: 0,
+        }
+    }
+}
+
+/// TOCLIENT_ADD_PARTICLESPAWNER (Server::SendAddParticleSpawner, protocol
+/// >= 42): every value a "tween" that stays the same throughout, and a
+/// range that is evenly picked from (bias 0). Textures are drawn as
+/// minetest_game asks, with blend "clip".
+pub fn build_particle_spawner(id: u32, p: &Particles) -> Vec<u8> {
+    fn v3_range(w: &mut Writer, (min, max): ([f32; 3], [f32; 3])) {
+        w.u8(0).u16(1).f32(0.0); // tween: forwards, once, from the start
+        for _ in 0..2 {
+            for v in min.into_iter().chain(max) {
+                w.f32(v);
+            }
+            w.f32(0.0); // bias
+        }
+    }
+    fn f32_range(w: &mut Writer, (min, max): (f32, f32)) {
+        w.u8(0).u16(1).f32(0.0);
+        for _ in 0..2 {
+            w.f32(min).f32(max).f32(0.0);
+        }
+    }
+    let mut w = Writer::new(TOCLIENT_ADD_PARTICLESPAWNER);
+    w.u16(p.amount).f32(p.time);
+    v3_range(&mut w, p.pos);
+    v3_range(&mut w, p.vel);
+    v3_range(&mut w, p.acc);
+    f32_range(&mut w, p.life);
+    f32_range(&mut w, p.size);
+    w.u8(p.collide as u8).bytes32(p.texture.as_bytes());
+    w.u32(id)
+        .u8(0) // vertical
+        .u8(0) // collision_removal
+        .u16(p.attached)
+        .u8(0) // animation: none
+        .u8(p.glow)
+        .u8(0); // object_collision
+    let (node, param2) = p.node.unwrap_or((127, 0)); // CONTENT_IGNORE: no node
+    w.u16(node).u8(param2).u8(0); // node, param2, tile (0: any)
+    // The texture's newer properties: flags (blend mode clip, 4, shifted
+    // one up), alpha 1 throughout, scale 1 throughout.
+    w.u8(4 << 1);
+    w.u8(0).u16(1).f32(0.0).f32(1.0).f32(1.0);
+    w.u8(0).u16(1).f32(0.0).f32(1.0).f32(1.0).f32(1.0).f32(1.0);
+    v3_range(&mut w, ([0.0; 3], [0.0; 3])); // drag
+    v3_range(&mut w, ([0.0; 3], [0.0; 3])); // jitter
+    f32_range(&mut w, (0.0, 0.0)); // bounce
+    w.u8(0); // attractor: none
+    v3_range(&mut w, ([0.0; 3], [0.0; 3])); // radius
+    w.u16(0); // texture pool: none
+    w.into_inner()
+}
+
+/// TOCLIENT_DELETE_PARTICLESPAWNER: stop a spawner early.
+pub fn build_delete_particle_spawner(id: u32) -> Vec<u8> {
+    let mut w = Writer::new(TOCLIENT_DELETE_PARTICLESPAWNER);
+    w.u32(id);
     w.into_inner()
 }
 

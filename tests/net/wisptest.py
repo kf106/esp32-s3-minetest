@@ -12,7 +12,7 @@ def say(cl, text):
 def chat(m):
     o = 4; n = u16(m, o); o += 2 + 2 * n; n = u16(m, o); o += 2
     return m[o:o + 2 * n].decode("utf-16-be")
-lines, sounds, stopped, wisps, gone, hp, blocks, items, sprites = [], [], [], {}, [], [], [], [], []
+lines, sounds, stopped, wisps, gone, hp, blocks, items, sprites, parts, deleted = [], [], [], {}, [], [], [], [], [], [], []
 def watch(cl, secs, until=None):
     end = time.time() + secs
     while time.time() < end:
@@ -27,6 +27,10 @@ def watch(cl, secs, until=None):
                 sounds.append((name, sid, kind, obj, loop))
             elif cmd == 0x40:
                 stopped.append(struct.unpack_from(">i", m, 2)[0])
+            elif cmd == 0x47:
+                parts.append(spawner(m))
+            elif cmd == 0x53:
+                deleted.append(struct.unpack_from(">I", m, 2)[0])
             elif cmd == 0x31:
                 removed, added = remove_add(m)
                 for oid in removed:
@@ -76,6 +80,9 @@ assert (0, 4, 4, 0.05000000074505806) in [(a, b, n, f) for a, b, n, f in sprites
 assert wisp in gone and hum[0][1] in stopped, (gone, stopped)
 assert hp and hp[-1] < 20, hp
 assert blocks, "the burst changed no nodes"
+# Sparks from it while it whined, and the burst's flash and smoke.
+assert any(p["texture"] == "mobs_wisp_spark.png" and p["attached"] == wisp for p in parts), parts
+assert {"tnt_boom.png", "tnt_smoke.png"} <= {p["texture"] for p in parts}
 print("it burst: HP", hp[-1], "and", len(blocks), "blocks sent again")
 # With TNT off, the burst hurts but breaks nothing.
 watch(c, 6)

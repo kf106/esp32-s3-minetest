@@ -1,3 +1,8 @@
+default_item_smoke.png (a burning dropped item's smoke) is from Minetest
+Game's default mod, unchanged: by Ferk, CC0 1.0.
+default_invisible_node_overlay.png (on hidden butterflies' and fireflies'
+pictures) is from the same mod: by celeron55, CC BY-SA 3.0.
+
 default_stick.png, default_coal_lump.png, default_iron_lump.png, gui_furnace_arrow_bg.png,
 default_steel_ingot.png, gui_furnace_arrow_fg.png, the tool pictures
 default_tool_{wood,stone,steel}{pick,shovel,axe,sword}.png, the furnace textures

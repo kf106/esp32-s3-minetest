@@ -107,5 +107,18 @@ del lines[:]; say(d, "/mobs off"); end = time.time() + 3; got = []
 while time.time() < end and not any("permission" in l for l in got):
     d.pump(0.05); got += [chat(m) for m in d.take(0x2F)]
 assert any("missing privilege" in l for l in got), got
+# Digging: the other player sees bits of the node fly (builtin's
+# handle_node_drops); the digger's own client makes its own.
+c.pos_bs = [70.0, 30.0, 100.0]; c.playerpos(); d.pos_bs = [80.0, 30.0, 100.0]; d.playerpos(); d.pump(0.3)
+d.take(0x47); c.take(0x47)
+pointed = struct.pack(">BB3h3h", 0, 1, 7, 2, 12, 7, 3, 12)
+c.send(0, struct.pack(">HBH", 0x39, 2, 0) + struct.pack(">I", len(pointed)) + pointed
+       + struct.pack(">3i3iiiIBB", 7000, 3000, 10000, 0, 0, 0, 3000, 0, 0, 72, 5))
+end = time.time() + 2; seen = []
+while time.time() < end and not seen:
+    d.pump(0.05); seen = [spawner(m) for m in d.take(0x47)]
+c.pump(0.3)
+print("dig bits seen by the other player:", seen)
+assert seen and seen[0]["node"] not in (0, 127) and not [m for m in c.take(0x47)]
 d.raw(0, b"\x00\x03")
 c.raw(0, b"\x00\x03"); time.sleep(0.3); print("MOBS OK")

@@ -157,6 +157,32 @@ def item_updates(c, oid):
         if i == oid and m[0] == 1: out.append(struct.unpack_from(">3f3f", m, 1))
     return out
 
+def spawner(m):
+    """TOCLIENT_ADD_PARTICLESPAWNER, read as Luanti 5.17's client does
+    (protocol 53); every byte must be used."""
+    o = [2]
+    def take(fmt):
+        v = struct.unpack_from(">" + fmt, m, o[0]); o[0] += struct.calcsize(">" + fmt); return v
+    amount, time_ = take("Hf")
+    def tween(n):
+        style, reps, beg = take("BHf"); assert style < 4 and reps == 1
+        vals = [take("%df" % n) + take("%df" % n) + take("f") for _ in range(2)]
+        assert vals[0] == vals[1], "constant"
+        return vals[0]
+    pos, vel, acc = tween(3), tween(3), tween(3)
+    life, size = tween(1), tween(1)
+    collide, = take("B"); n, = take("I"); tex = m[o[0]:o[0] + n].decode(); o[0] += n
+    sid, vertical, removal, attached, anim, glow, objcol = take("IBBHBBB"); assert anim == 0
+    node, param2, tile = take("HBB")
+    flags, = take("B"); assert flags == 8, flags  # blend: clip
+    take("BHfff"); take("BHfffff")  # alpha, scale tweens
+    tween(3); tween(3); tween(1)  # drag, jitter, bounce
+    kind, = take("B"); assert kind == 0
+    tween(3)  # radius
+    pool, = take("H"); assert pool == 0
+    assert o[0] == len(m), (o[0], len(m))
+    return dict(amount=amount, time=time_, texture=tex, node=node, glow=glow, size=size, id=sid, attached=attached)
+
 port = int(sys.argv[1])
 a = Client("Tester", port)
 t0 = time.time(); a.login(); print(f"logged in in {time.time() - t0:.2f}s at {a.pos_bs}")

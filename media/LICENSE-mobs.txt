@@ -1,7 +1,8 @@
 Mob media
 =========
 
-mobs_mossling.png, mobs_wisp.png, mobs_hexer.png, mobs_hexer_orb.png
+mobs_mossling.png, mobs_wisp.png, mobs_hexer.png, mobs_hexer_orb.png,
+mobs_wisp_spark.png
   Made by Keir Finlow-Bates for esp32-s3-minetest (tools/make_mob_skins.py).
   Licensed under CC BY-SA 3.0:
   https://creativecommons.org/licenses/by-sa/3.0/
@@ -19,4 +20,5 @@ mobs_hexer_vanish.ogg
 
 A mossling sinking at dawn plays Minetest Game's default_dig_crumbly.ogg
 (see LICENSE-sounds.txt), and a wisp's burst its tnt_explode.ogg (see
-LICENSE-tnt.txt).
+LICENSE-tnt.txt), as do its particles (tnt_boom.png, tnt_smoke.png), and
+a hexer's blink (tnt_smoke.png).

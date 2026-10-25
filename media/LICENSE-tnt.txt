@@ -10,11 +10,16 @@ their original names:
   tnt_gunpowder_burning_curved_animated.png,
   tnt_gunpowder_burning_t_junction_animated.png,
   tnt_gunpowder_burning_crossing_animated.png,
+  tnt_boom.png, tnt_smoke.png, tnt_blast.png (a blast's particles),
   tnt_explode.ogg, tnt_ignite.ogg, tnt_gunpowder_burning.ogg
 
 Credits, from that mod's README.md:
 
 BlockMen (CC BY-SA 3.0): all textures not mentioned below.
+
+ShadowNinja (CC BY-SA 3.0): tnt_smoke.png.
+
+sofar (sofar@foo-projects.org) (CC BY-SA 3.0): tnt_blast.png.
 
 Wuzzy (CC BY-SA 3.0): all gunpowder textures except
 tnt_gunpowder_inventory.png.

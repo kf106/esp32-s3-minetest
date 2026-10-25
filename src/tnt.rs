@@ -34,8 +34,7 @@
 //! gunpowder can be lit, and fire doesn't burn them, so a moderator can
 //! stop a griefer. (minetest_game has no TNT at all when it is off.)
 //!
-//! Unlike minetest_game's, lit TNT doesn't fall, and the blast makes no
-//! smoke or debris particles.
+//! Unlike minetest_game's, lit TNT doesn't fall.
 //!
 //! The pure parts are here; the server applies them.
 

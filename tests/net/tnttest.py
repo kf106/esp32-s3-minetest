@@ -44,7 +44,7 @@ def watch(cl, secs, until=None):
                     nodes[(bx * 16 + x, by * 16 + y, bz * 16 + z)] = struct.unpack_from(">H", raw, 5 + 2 * i)[0]
             elif cmd == 0x3f:
                 n = u16(m, 6); sounds.append(m[8:8 + n].decode())
-            elif cmd in (0x33, 0x2b, 0x31):
+            elif cmd in (0x33, 0x2b, 0x31, 0x47):
                 pkts.append((cmd, m))
         cl.cmds = []
         if until and until(): return True
@@ -87,6 +87,12 @@ print("HP now", hp, "thrown", push); assert hp and hp[-1] < 20 and push and push
 # A crater: the TNT, the ground under it and the chest are gone.
 for p in [(11, 3, 12), (11, 2, 12), (11, 1, 12), (11, 3, 10), (12, 2, 12)]:
     assert nodes.get(p) in (126, None) or nodes[p] >= 395 and nodes[p] <= 400, (p, nodes.get(p))
+# The blast's flash, smoke and flying bits of stone (the tnt mod's
+# add_effects): particle spawners, read as the client reads them.
+effects = [spawner(m) for k, m in pkts if k == 0x47]
+print("particles:", [(e["texture"], e["amount"], e["node"]) for e in effects])
+assert {"tnt_boom.png", "tnt_smoke.png", "tnt_blast.png"} <= {e["texture"] for e in effects}
+assert any(e["node"] != 127 for e in effects), "no bits of the blown-up node"
 added = [a for k, m in pkts if k == 0x31 for a in remove_add(m)[1]]
 print("thrown out:", len(added), "items")
 assert len(added) >= 3

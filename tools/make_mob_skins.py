@@ -365,6 +365,18 @@ def orb(size=16):
             im.putpixel((x, y), jit(col + (a,), x, y, 301, 10))
     return im
 
+def spark(size=4):
+    """A wisp's spark: a speck of pale blue light, bright in the middle."""
+    im = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    for y in range(size):
+        for x in range(size):
+            r = math.hypot(x - (size - 1) / 2, y - (size - 1) / 2)
+            if r < 0.8:
+                im.putpixel((x, y), (235, 250, 255, 255))
+            elif r < 1.7:
+                im.putpixel((x, y), (120, 190, 255, 170))
+    return im
+
 def label(dr, xy, text, col=(225, 225, 235)):
     dr.text(xy, text, fill=col)
 
@@ -372,6 +384,7 @@ if __name__ == "__main__":
     m, x, w = mossling(), hexer(), wisp()
     m.save(f"{OUT}/mobs_mossling.png"); x.save(f"{OUT}/mobs_hexer.png"); w.save(f"{OUT}/mobs_wisp.png")
     orb().save(f"{OUT}/mobs_hexer_orb.png")
+    spark().save(f"{OUT}/mobs_wisp_spark.png")
 
     BG = (24, 24, 32, 255)
     sheet = Image.new("RGBA", (1280, 900), BG)

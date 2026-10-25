@@ -70,6 +70,8 @@ const CHEST_HEARING: f32 = 10.0;
 const FURNACE_HEARING: f32 = 16.0;
 /// How far sounds carry by default (Luanti's max_hear_distance).
 const HEARING: f32 = 32.0;
+/// How far from players short-lived particles are sent.
+const PARTICLE_RANGE: f32 = 64.0;
 /// How far from players (map blocks) butterflies and fireflies look at the
 /// light: less than Luanti's active block range (4), to keep the block
 /// columns looked at within what the server keeps worked out.
@@ -273,6 +275,8 @@ struct Peer {
     last_seen: Instant,
     name: Option<String>,
     hello_sent: bool,
+    /// The protocol version agreed (in TOSERVER_INIT).
+    proto: u16,
     /// Auth mechanisms we offered in TOCLIENT_HELLO.
     allowed_auth_mechs: u32,
     authenticated: bool,
@@ -364,6 +368,7 @@ impl Peer {
             last_seen: Instant::now(),
             name: None,
             hello_sent: false,
+            proto: 0,
             allowed_auth_mechs: 0,
             authenticated: false,
             home: None,
@@ -511,6 +516,9 @@ pub struct Server {
     /// The looping hum of each wisp, and the whine of its fuse while lit
     /// (sound ids), and when a wisp last blasted nodes.
     mob_sounds: HashMap<u16, (i32, i32)>,
+    /// The id for the next particle spawner, and a lit wisp's sparks.
+    next_spawner: u32,
+    mob_sparks: HashMap<u16, u32>,
     mob_blasted: Option<Instant>,
     /// Sand and gravel on their way down (falling.rs).
     falling: Vec<Falling>,
@@ -950,6 +958,8 @@ impl Server {
             mobs: Mobs::new(),
             mobs_spawned: Instant::now(),
             mob_sounds: HashMap::new(),
+            next_spawner: 1,
+            mob_sparks: HashMap::new(),
             mob_blasted: None,
             falling: Vec::new(),
             furnaces_stepped: Instant::now(),
@@ -1372,6 +1382,7 @@ impl Server {
         };
         peer.name = Some(init.name);
         peer.hello_sent = true;
+        peer.proto = proto;
         peer.allowed_auth_mechs = auth_mechs;
         info!(
             "Sending TOCLIENT_HELLO: protocol {proto}, serialisation {ser_ver}, auth {}",
@@ -2159,6 +2170,8 @@ impl Server {
                     }
                 }
                 info!("{name} dug {} at {under:?}", content::name_of(current));
+                // Others see bits of it fly (builtin's handle_node_drops).
+                self.node_bits(node_pos(under), current, 0, Some(from));
                 // Wear out the tool (builtin's node_dig); a worn-out tool
                 // breaks with its sound.
                 if let Some(mut tool) = wielded.filter(|_| wear > 0) {
@@ -3393,6 +3406,7 @@ impl Server {
                 debug!("{} {} burnt up", d.count, content::name_of(d.item));
                 self.send_to_players(&build_remove_add(&[id], &[]));
                 self.play_sound_near(-1, "default_item_smoke", 1.0, at, 8.0);
+                self.item_smoke(at.map(|v| v / 10.0));
             }
         }
     }
@@ -3637,6 +3651,16 @@ impl Server {
         for p in powder {
             self.light_tnt(p);
         }
+        // Bits of what there was most of fly out (add_effects).
+        let mut most: Vec<(u16, u32)> = Vec::new();
+        for d in drops.iter().filter(|d| content::is_node(d.id)) {
+            match most.iter_mut().find(|(id, _)| *id == d.id) {
+                Some((_, n)) => *n += d.count as u32,
+                None => most.push((d.id, d.count as u32)),
+            }
+        }
+        let bits = most.iter().max_by_key(|(_, n)| *n).map(|(id, _)| *id);
+        self.blast_effects(center, radius, bits);
         self.blast_physics(center, radius, death);
         self.eject(center, radius, drops);
         info!(
@@ -3978,10 +4002,11 @@ impl Server {
         if !nature::should_decay(pos, &node) {
             return;
         }
-        let leaf = self.world.node(pos);
+        let (leaf, leaf_param2) = (self.world.node(pos), self.world.param2(pos));
         let p16 = [pos.0 as i16, pos.1 as i16, pos.2 as i16];
         self.world.set_node(pos, world::CONTENT_AIR, 0);
         self.broadcast_node(p16, &build_removenode(p16));
+        self.node_bits(pos, leaf, leaf_param2, None);
         self.wake_items(pos);
         self.drop_attached(p16);
         if let Some(drop) = nature::decay_drop(leaf, &mut self.rng) {
@@ -4984,6 +5009,24 @@ impl Server {
                     }
                 }
                 Event::Sinking(id) => {
+                    // A mossling sinks in a spray of the ground under it.
+                    if let Some(feet) = self.mobs.get(id).filter(|m| !m.def().flies).map(|m| m.pos) {
+                        let below = (feet[0].round() as i32, (feet[1] - 0.5).round() as i32, feet[2].round() as i32);
+                        let ground = self.world.node(below);
+                        let p = Particles {
+                            amount: 14,
+                            time: 1.5,
+                            pos: ([feet[0] - 0.3, feet[1], feet[2] - 0.3], [feet[0] + 0.3, feet[1] + 0.1, feet[2] + 0.3]),
+                            vel: ([-0.6, 0.8, -0.6], [0.6, 2.0, 0.6]),
+                            acc: ([0.0, -GRAVITY, 0.0], [0.0, -GRAVITY, 0.0]),
+                            life: (0.4, 0.9),
+                            size: (0.0, 0.0),
+                            node: content::walkable(ground).then_some((ground, 0)),
+                            texture: "tnt_smoke.png",
+                            ..Particles::default()
+                        };
+                        self.particles(feet, &p, None);
+                    }
                     if let Some(m) = self.mobs.get(id) {
                         messages.push((id, mobs::properties(m, false)));
                         messages.push((id, mobs::animation_message(m)));
@@ -5007,9 +5050,14 @@ impl Server {
                         messages.push((id, mobs::head_message(m)));
                     }
                 }
-                Event::Blink(id) => {
-                    if let Some(m) = self.mobs.get(id) {
+                Event::Blink(id, from) => {
+                    let to = self.mobs.get(id).map(|m| {
                         messages.push((id, mobs::position(m)));
+                        m.pos
+                    });
+                    // A puff of smoke where it went from, and where it is.
+                    for at in std::iter::once(from).chain(to) {
+                        self.puff(at);
                     }
                 }
                 // A puff of smoke: the client's own, for an object punched
@@ -5038,6 +5086,24 @@ impl Server {
         }
         if !removed.is_empty() {
             self.send_to_players(&build_remove_add(&removed, &[]));
+        }
+        // Hex orbs leave a faint trail.
+        for (id, _) in &added {
+            if let Some(at) = self.mobs.get(*id).filter(|m| m.kind == mobs::Kind::Orb).map(|m| m.pos) {
+                let p = Particles {
+                    amount: 40,
+                    time: mobs::ORB_LIFE,
+                    pos: ([-0.1; 3], [0.1; 3]),
+                    vel: ([-0.2; 3], [0.2; 3]),
+                    life: (0.3, 0.6),
+                    size: (1.0, 1.6),
+                    texture: "mobs_hexer_orb.png",
+                    glow: 12,
+                    attached: *id,
+                    ..Particles::default()
+                };
+                self.particles(at, &p, None);
+            }
         }
         // New wisps hum, as long as they are about.
         for (id, _) in &added {
@@ -5156,6 +5222,7 @@ impl Server {
 
     /// A mob has gone: its hum and whine stop.
     fn stop_mob_sounds(&mut self, id: u16) {
+        self.mob_sparks.remove(&id);
         if let Some((hum, whine)) = self.mob_sounds.remove(&id) {
             for s in [hum, whine] {
                 if s != 0 {
@@ -5172,8 +5239,29 @@ impl Server {
         if old != 0 {
             self.send_to_players(&build_stop_sound(old));
         }
+        if let Some(sparks) = self.mob_sparks.remove(&id) {
+            self.send_to_players(&build_delete_particle_spawner(sparks));
+        }
         if !lit {
             return;
+        }
+        // Sparks fly off it as the fuse burns.
+        if let Some(at) = self.mobs.get(id).map(|m| m.pos) {
+            let p = Particles {
+                amount: 36,
+                time: mobs::def(mobs::Kind::Wisp).fuse,
+                pos: ([-0.2; 3], [0.2; 3]),
+                vel: ([-1.5, -0.5, -1.5], [1.5, 2.0, 1.5]),
+                acc: ([0.0, -2.0, 0.0], [0.0, -2.0, 0.0]),
+                life: (0.2, 0.5),
+                size: (0.4, 0.9),
+                texture: "mobs_wisp_spark.png",
+                glow: 14,
+                attached: id,
+                ..Particles::default()
+            };
+            self.mob_sparks.insert(id, self.next_spawner);
+            self.particles(at, &p, None);
         }
         let Some((sound, pos_bs)) = self.mobs.get(id).map(|m| (m.def().whine, m.pos_bs())) else {
             return;
@@ -5204,6 +5292,7 @@ impl Server {
         } else {
             let at = pos.map(|v| v * 10.0);
             self.play_sound_near(-1, "tnt_explode", 1.5, at, 64.0);
+            self.blast_effects(center, radius, None);
             self.blast_physics(center, radius, kills);
         }
     }
@@ -5253,6 +5342,129 @@ impl Server {
         let count = events.len();
         self.mob_events(events);
         count
+    }
+
+    // -------------------------------------------------------------------
+    // Particles
+    // -------------------------------------------------------------------
+
+    /// Particles at `at` (nodes), for players within PARTICLE_RANGE nodes
+    /// of it (as Luanti's server sends short-lived ones to players within
+    /// its block send distance), but not `except`. Only clients that know
+    /// the 5.6 form (protocol 42) get them.
+    fn particles(&mut self, at: [f32; 3], p: &Particles, except: Option<SocketAddr>) {
+        let id = self.next_spawner;
+        self.next_spawner = self.next_spawner.wrapping_add(1).max(1);
+        let packet = build_particle_spawner(id, p);
+        let reach = PARTICLE_RANGE * 10.0;
+        let at_bs = at.map(|v| v * 10.0);
+        let near: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .filter(|(a, p)| p.ready && p.proto >= 42 && Some(**a) != except)
+            .filter(|(_, p)| (0..3).map(|i| (p.pos_bs[i] - at_bs[i]).powi(2)).sum::<f32>() <= reach * reach)
+            .map(|(a, _)| *a)
+            .collect();
+        for addr in near {
+            self.send_command(addr, 0, &packet);
+        }
+    }
+
+    /// A puff of smoke round a body (a hexer blinking), feet at `at`.
+    fn puff(&mut self, at: [f32; 3]) {
+        let p = Particles {
+            amount: 16,
+            time: 0.1,
+            pos: ([at[0] - 0.4, at[1], at[2] - 0.4], [at[0] + 0.4, at[1] + 1.8, at[2] + 0.4]),
+            vel: ([-0.5, 0.3, -0.5], [0.5, 1.2, 0.5]),
+            life: (0.8, 1.5),
+            size: (2.0, 4.0),
+            texture: "tnt_smoke.png",
+            ..Particles::default()
+        };
+        self.particles(at, &p, None);
+    }
+
+    /// Bits of a node flying off as it goes: as builtin's handle_node_drops
+    /// shows other players a node being dug (`dug`), or as leaves decay.
+    fn node_bits(&mut self, pos: NodePos, node: u16, param2: u8, dug: Option<SocketAddr>) {
+        let c = [pos.0 as f32, pos.1 as f32, pos.2 as f32];
+        let p = if dug.is_some() {
+            Particles {
+                amount: 16,
+                pos: (c.map(|v| v - 0.25), c.map(|v| v + 0.25)),
+                vel: ([-1.5, 0.0, -1.5], [1.5, 3.0, 1.5]),
+                acc: ([0.0, -GRAVITY, 0.0], [0.0, -GRAVITY, 0.0]),
+                life: (0.0, 1.0),
+                size: (0.0, 0.0), // random
+                node: Some((node, param2)),
+                ..Particles::default()
+            }
+        } else {
+            Particles {
+                amount: 8,
+                pos: (c.map(|v| v - 0.5), c.map(|v| v + 0.5)),
+                vel: ([-0.5, -1.0, -0.5], [0.5, 0.0, 0.5]),
+                acc: ([0.0, -GRAVITY, 0.0], [0.0, -GRAVITY, 0.0]),
+                size: (0.0, 0.0),
+                node: Some((node, param2)),
+                ..Particles::default()
+            }
+        };
+        self.particles(c, &p, dug);
+    }
+
+    /// minetest_game's item_entity burn_up: a dropped item burning up goes
+    /// in a puff of smoke.
+    fn item_smoke(&mut self, at: [f32; 3]) {
+        let p = Particles {
+            amount: 3,
+            time: 0.1,
+            pos: (at.map(|v| v - 0.1), at.map(|v| v + 0.1)),
+            vel: ([0.0, 2.5, 0.0], [0.0, 2.5, 0.0]),
+            acc: ([-0.15, -0.02, -0.15], [0.15, -0.01, 0.15]),
+            life: (4.0, 6.0),
+            size: (5.0, 5.0),
+            collide: true,
+            texture: "default_item_smoke.png",
+            ..Particles::default()
+        };
+        self.particles(at, &p, None);
+    }
+
+    /// The tnt mod's add_effects: a flash, a cloud of smoke, and bits of
+    /// what was blown up (`node`, the most of it) flying out and falling.
+    fn blast_effects(&mut self, center: NodePos, radius: i32, node: Option<u16>) {
+        let c = [center.0 as f32, center.1 as f32, center.2 as f32];
+        let r = radius as f32;
+        let flash = Particles { life: (0.4, 0.4), size: (r * 10.0, r * 10.0), texture: "tnt_boom.png", glow: 15, pos: (c, c), ..Particles::default() };
+        self.particles(c, &flash, None);
+        let half = r / 2.0;
+        let smoke = Particles {
+            amount: 64,
+            time: 0.5,
+            pos: (c.map(|v| v - half), c.map(|v| v + half)),
+            vel: ([-10.0; 3], [10.0; 3]),
+            life: (1.0, 2.5),
+            size: (r * 3.0, r * 5.0),
+            texture: "tnt_smoke.png",
+            ..Particles::default()
+        };
+        self.particles(c, &smoke, None);
+        let debris = Particles {
+            amount: 64,
+            time: 0.1,
+            pos: (c.map(|v| v - half), c.map(|v| v + half)),
+            vel: ([-3.0, 0.0, -3.0], [3.0, 5.0, 3.0]),
+            acc: ([0.0, -10.0, 0.0], [0.0, -10.0, 0.0]),
+            life: (0.8, 2.0),
+            size: (r * 0.33, r),
+            collide: true,
+            texture: "tnt_blast.png",
+            node: node.map(|n| (n, 0)),
+            ..Particles::default()
+        };
+        self.particles(c, &debris, None);
     }
 
     /// Send a command reliably to every player in the game.

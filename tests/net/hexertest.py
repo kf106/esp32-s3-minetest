@@ -12,7 +12,7 @@ def say(cl, text):
 def chat(m):
     o = 4; n = u16(m, o); o += 2 + 2 * n; n = u16(m, o); o += 2
     return m[o:o + 2 * n].decode("utf-16-be")
-lines, sounds, objs, gone, hp, nodes, items, punched = [], [], {}, [], [], [], [], []
+lines, sounds, objs, gone, hp, nodes, items, punched, parts = [], [], {}, [], [], [], [], [], []
 def watch(cl, secs, until=None):
     end = time.time() + secs
     while time.time() < end:
@@ -52,6 +52,8 @@ def watch(cl, secs, until=None):
                         punched.append((i, u16(msg, 1)))
             elif cmd == 0x33:
                 hp.append(u16(m, 2))
+            elif cmd == 0x47:
+                parts.append(spawner(m))
         cl.cmds = []
         if until and until(): return True
     return False
@@ -74,6 +76,8 @@ print("sounds", sorted(set(sounds)), "HP", hp, "drained", nodes[:4])
 for s in ("mobs_hexer_hiss", "mobs_hexer_cast", "mobs_hexer_orb", "mobs_hexer_impact"):
     assert s in sounds, s
 assert hp and hp[-1] < 20
+# Its orbs trail glowing bits.
+assert any(p["texture"] == "mobs_hexer_orb.png" and p["attached"] in orbs for p in parts), parts
 assert nodes and all(n in (1, 288 + 0) or n > 0 for _, n in nodes)
 # Five blows of the steel sword kill it (30 HP), leaving iron.
 body = lambda: [v / 10 for v in c.pos_bs]

@@ -110,7 +110,7 @@ pub const BLINK_SOUND: &str = "mobs_hexer_blink";
 /// lasts, and how near it must pass a player to hit (generous).
 const ORB_SPEED: f32 = 7.0;
 const ORB_GRAVITY: f32 = 4.0;
-const ORB_LIFE: f32 = 6.0;
+pub const ORB_LIFE: f32 = 6.0;
 const ORB_HIT: f32 = 0.7;
 /// A target further than this is lost; one out of sight this long, too.
 const LOSE_RANGE: f32 = 24.0;
@@ -546,8 +546,8 @@ pub enum Event {
     Hit { mob: u16, player: u16, damage: u16, push: [f32; 3], kills: &'static str },
     /// A hexer draws the life from the ground about its feet (a node).
     Drain(NodePos),
-    /// A hexer blinks to where it now is.
-    Blink(u16),
+    /// A hexer blinks to where it now is, from where it was (feet).
+    Blink(u16, [f32; 3]),
     /// A hexer's head turns (Mob::head).
     Head(u16),
     /// A hexer vanishes in a puff of smoke (Removed follows).
@@ -1393,6 +1393,7 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
             } else if dist < BLINK_NEAR && m.fuse <= 0.0 {
                 // Too close: it blinks away.
                 if let Some(to) = blink_spot(m, p.pos, t, rng) {
+                    let from = m.pos;
                     m.pos = to;
                     m.vel = [0.0; 3];
                     m.want = [0.0; 2];
@@ -1401,7 +1402,7 @@ fn think_hexer(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng:
                     m.cooldown = m.cooldown.min(0.5);
                     m.watch = 0.0;
                     m.goal = None;
-                    events.push(Event::Blink(m.id));
+                    events.push(Event::Blink(m.id, from));
                     events.push(Event::Sound(m.id, BLINK_SOUND, 1.0, 24.0, m.pos));
                 }
             } else if m.watch > 0.0 {
@@ -2260,7 +2261,7 @@ mod tests {
         // A player right beside it: it blinks away.
         let close = [Player { id: 2, pos: [m.pos[0] + 1.5, m.pos[1], m.pos[2]], alive: true }];
         let ev = run(&mut mobs, &t, &close, 1.0, &mut rng);
-        assert!(ev.contains(&Event::Blink(FIRST_ID)), "{ev:?}");
+        assert!(ev.iter().any(|e| matches!(e, Event::Blink(FIRST_ID, _))), "{ev:?}");
         let m = mobs.get(FIRST_ID).unwrap();
         assert!(dist2(m.pos, close[0].pos) > 9.0);
         // At dawn, gone in smoke.
