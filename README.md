@@ -18,13 +18,13 @@ A standard, unmodified Luanti client connects to it over Wi-Fi as it would to an
 
 ## What it does
 
-It covers most of Minetest Game: 32 of its 34 mods, with carts and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
+It covers nearly all of Minetest Game: 33 of its 34 mods, with creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
 
 - **[The world](docs/features.md#the-world):** Minetest Game's biomes, from desert and savanna to tundra and icesheet, with hills, mountains, rivers, lakes, caves, lava, ores and dungeons with loot chests; day and night, weather, and fire that spreads (within limits the board can manage).
 - **[Trees, plants and farming](docs/features.md#trees-plants-and-farming):** forests that grow back from saplings, flowers, bushes, kelp and corals, grass that spreads, wheat and cotton to farm, and butterflies and fireflies to catch.
 - **[Crafting and smelting](docs/features.md#crafting-and-smelting):** Minetest Game's recipes and furnace, with its in-game crafting guide.
 - **[Building](docs/features.md#building):** stairs and slabs, doors and trapdoors, fences, walls, glass panes, chests, signs.
-- **[Tools and items](docs/features.md#tools-and-items):** tools that wear, torches that light caves, flint and steel, TNT and gunpowder (with a switch for moderators), buckets, keys, the screwdriver, binoculars and the mapping kit, books you can write in.
+- **[Tools and items](docs/features.md#tools-and-items):** tools that wear, torches that light caves, flint and steel, TNT and gunpowder (with a switch for moderators), buckets, keys, the screwdriver, binoculars and the mapping kit, books you can write in, boats, and carts with rails to run them on.
 - **[Mobs](docs/features.md#mobs):** optional, and our own (Minetest Game has none): mosslings that hunt in packs at night, wisps that drift up and burst, and hexers that drain the land and hurl hexes, off until an admin turns them on.
 - **[Players](docs/features.md#players):** skins (add your own), health, drowning, bones, beds and respawn points, dropped items, Minetest Game's sounds.
 - **[The server](docs/features.md#the-server):** Luanti's protocol (5.17, protocol 53), SRP logins, chat with Luanti's [commands and privileges](docs/admin.md), saving as it goes so pulling the plug loses at most a few seconds.

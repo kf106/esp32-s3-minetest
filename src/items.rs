@@ -63,6 +63,9 @@ pub struct Dropped {
     pub vel: [f32; 3],
     pub falling: bool,
     pub age: f32,
+    /// The cart carrying it (attached to it, it goes where the cart
+    /// goes: carts.rs), if any.
+    pub carried: Option<u16>,
 }
 
 impl Dropped {
@@ -120,7 +123,7 @@ impl Items {
                     let id = items.next_id;
                     items.next_id += 1;
                     let (item, count, wear, meta) = (stack.id, stack.count, stack.wear, stack.meta);
-                    items.list.push(Dropped { id, item, count, wear, meta, pos, vel: [0.0; 3], falling: true, age });
+                    items.list.push(Dropped { id, item, count, wear, meta, pos, vel: [0.0; 3], falling: true, age, carried: None });
                 }
                 Some(_) => {}
                 None => warn!("Skipping item line \"{line}\""),
@@ -220,7 +223,7 @@ impl Items {
         let (mut pos, vel) = motion;
         lift_out(&mut pos, item_size(stack.count), solid);
         let (item, count, wear, meta) = (stack.id, stack.count, stack.wear, stack.meta);
-        self.list.push(Dropped { id, item, count, wear, meta, pos, vel, falling: true, age: 0.0 });
+        self.list.push(Dropped { id, item, count, wear, meta, pos, vel, falling: true, age: 0.0, carried: None });
         self.touch();
         (id, evicted)
     }
@@ -240,11 +243,49 @@ impl Items {
 
     /// The node at `node` changed: items resting on or near it start
     /// falling again (they stop at once if still supported).
+    /// A pushed cart's on_step: the items within a node of it that aren't
+    /// in a cart already go into it (stopped, attached). Returns them.
+    pub fn carry_near(&mut self, cart: u16, pos: [f32; 3]) -> Vec<u16> {
+        let mut taken = Vec::new();
+        for d in &mut self.list {
+            let near = (0..3).map(|i| (d.pos[i] - pos[i]).powi(2)).sum::<f32>() <= 1.0;
+            if near && d.carried.is_none() {
+                d.carried = Some(cart);
+                d.falling = false;
+                d.vel = [0.0; 3];
+                d.pos = pos;
+                taken.push(d.id);
+            }
+        }
+        if !taken.is_empty() {
+            self.touch();
+        }
+        taken
+    }
+
+    /// The items in `cart` are where it is now.
+    pub fn carry_to(&mut self, cart: u16, pos: [f32; 3]) {
+        for d in self.list.iter_mut().filter(|d| d.carried == Some(cart)) {
+            d.pos = pos;
+        }
+    }
+
+    /// The cart is gone: what it carried falls out. Returns them.
+    pub fn let_go(&mut self, cart: u16) -> Vec<u16> {
+        let mut out = Vec::new();
+        for d in self.list.iter_mut().filter(|d| d.carried == Some(cart)) {
+            d.carried = None;
+            d.falling = true;
+            out.push(d.id);
+        }
+        out
+    }
+
     pub fn wake_near(&mut self, node: [i32; 3]) -> Vec<u16> {
         let mut woken = Vec::new();
         for d in &mut self.list {
             let near = (0..3).all(|i| (d.pos[i] - node[i] as f32).abs() < 1.5);
-            if near && !d.falling {
+            if near && !d.falling && d.carried.is_none() {
                 d.falling = true;
                 woken.push(d.id);
             }
@@ -320,6 +361,8 @@ impl Items {
             let other = self.list.iter().find(|o| {
                 o.id != id
                     && !o.falling
+                    && o.carried.is_none()
+                    && me.carried.is_none()
                     && o.item == me.item
                     && o.wear == me.wear
                     && o.meta == me.meta

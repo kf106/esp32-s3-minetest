@@ -83,8 +83,13 @@ const JUMP_SPEED: f32 = 5.0;
 /// How long sinking into the ground at dawn takes, and how fast.
 const SINK_TIME: f32 = 2.0;
 const SINK_SPEED: f32 = 0.5;
-/// A wisp lit this far from the player it is after stops (they got away).
-const FUSE_ABORT: f32 = 4.5;
+/// A lit wisp stops swelling if the player it is after gets this far away
+/// or out of sight (Minecraft's creeper: 7 blocks), and its fuse burns
+/// back down; it lights again within its reach (3).
+const FUSE_ABORT: f32 = 7.0;
+/// Minecraft's creeper explosion (power 3): it hurts out to twice its
+/// power.
+pub const BURST_REACH: f32 = 6.0;
 /// How far a wisp keeps from a player before it rushes them, and how long.
 const STALK_RANGE: f32 = 7.0;
 /// How high above the ground a wandering wisp keeps.
@@ -258,7 +263,8 @@ pub const MOSSLING: Def = Def {
 pub const WISP: Def = Def {
     name: "mobs:wisp",
     description: "Wisp",
-    hp_max: 6,
+    // As tough as a creeper.
+    hp_max: 20,
     half_width: 0.3,
     height: 0.6,
     below: 0.3,
@@ -274,8 +280,8 @@ pub const WISP: Def = Def {
     walk_speed: 0.8,
     run_speed: 3.5,
     view_range: 20.0,
-    // How close it gets before it lights its fuse.
-    reach: 2.2,
+    // How close it gets before it lights its fuse (a creeper's 3).
+    reach: 3.0,
     damage: 0,
     attack_every: 0.0,
     flee_hp: 0,
@@ -370,6 +376,33 @@ pub fn def(kind: Kind) -> &'static Def {
         Kind::Hexer => &HEXER,
         Kind::Orb => &ORB,
     }
+}
+
+/// Minecraft's explosion damage (Explosion.explode, Normal difficulty) for
+/// a creeper (power 3) to something `dist` nodes from it, `exposure` (0 to
+/// 1) of it in the open to the blast: up to 43 HP at its heart, about 17 at
+/// 3 nodes, nothing past BURST_REACH.
+pub fn burst_damage(dist: f32, exposure: f32) -> f32 {
+    if dist >= BURST_REACH {
+        return 0.0;
+    }
+    let impact = (1.0 - dist / BURST_REACH) * exposure;
+    (impact * impact + impact) / 2.0 * 7.0 * BURST_REACH + 1.0
+}
+
+/// How much of a body (feet at `feet`, `half_width` across, `height`
+/// tall) a blast at `from` reaches (Minecraft's getSeenPercent): the share
+/// of 27 points through it with nothing opaque in between.
+pub fn exposure(from: [f32; 3], feet: [f32; 3], half_width: f32, height: f32, t: &dyn Terrain) -> f32 {
+    let mut seen = 0;
+    for i in 0..27 {
+        let (fx, fy, fz) = ((i % 3) as f32 / 2.0, (i / 3 % 3) as f32 / 2.0, (i / 9) as f32 / 2.0);
+        let p = [feet[0] - half_width + fx * 2.0 * half_width, feet[1] + fy * height, feet[2] - half_width + fz * 2.0 * half_width];
+        if clear_line(from, p, t) {
+            seen += 1;
+        }
+    }
+    seen as f32 / 27.0
 }
 
 /// What a hexer's draining does to a node: grass and litter die to dirt,
@@ -473,6 +506,8 @@ pub struct Mob {
     swing: f32,
     /// A wisp's fuse: seconds left. A hexer's: until it may blink again.
     fuse: f32,
+    /// A wisp's fuse is burning (else, lit, it burns back).
+    swelling: bool,
     chatter: f32,
     /// How long it has been pushing against something, and a way round
     /// it being tried (seconds left, and which side).
@@ -837,6 +872,7 @@ fn new_mob(id: u16, kind: Kind, pos: [f32; 3], pack: u16, flank: f32, rng: &mut 
         cooldown: 0.0,
         swing: 0.0,
         fuse: 0.0,
+        swelling: false,
         chatter: rng.range(3, 10) as f32,
         stuck: 0.0,
         detour: 0.0,
@@ -1227,21 +1263,37 @@ fn think_wisp(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: 
     let mut want = [0.0f32; 3];
     match (m.state, target) {
         (State::Lit, Some(p)) => {
+            // As a creeper swells: still, while the player is within
+            // FUSE_ABORT and in sight; otherwise its fuse burns back as it
+            // comes after them, lighting again once they are within its
+            // reach.
             let chest = [p.pos[0], p.pos[1] + 1.0, p.pos[2]];
             let (dir, dist) = norm3([chest[0] - m.pos[0], chest[1] - m.pos[1], chest[2] - m.pos[2]]);
-            if dist > FUSE_ABORT {
-                // They got away: it goes out, and hangs back a while.
-                events.push(Event::Fuse(m.id, false));
-                m.state = State::Chase;
-                m.timer = 3.0;
-            } else {
+            let in_sight = sees(m, &p, t);
+            let swell = in_sight && dist <= if m.swelling { FUSE_ABORT } else { d.reach };
+            anim = Anim::Charge;
+            if swell {
+                if !m.swelling {
+                    m.swelling = true;
+                    events.push(Event::Fuse(m.id, true));
+                }
                 m.fuse -= THINK;
-                anim = Anim::Charge;
-                want = dir.map(|v| v * d.walk_speed * 2.0);
                 if m.fuse <= 0.0 {
                     events.push(Event::Burst { mob: m.id, pos: m.pos, radius: d.burst });
                     m.hp = 0;
                     return;
+                }
+            } else {
+                if m.swelling {
+                    m.swelling = false;
+                    events.push(Event::Fuse(m.id, false));
+                }
+                m.fuse += THINK;
+                want = dir.map(|v| v * d.run_speed);
+                if m.fuse >= d.fuse {
+                    // Burnt right back: an ordinary chase again.
+                    m.state = State::Chase;
+                    m.timer = 0.0;
                 }
             }
         }
@@ -1252,6 +1304,7 @@ fn think_wisp(m: &mut Mob, players: &[Player], t: &dyn Terrain, day: bool, rng: 
             if dist <= d.reach {
                 m.state = State::Lit;
                 m.fuse = d.fuse;
+                m.swelling = true;
                 anim = Anim::Charge;
                 events.push(Event::Fuse(m.id, true));
             } else if m.timer > 0.0 {
@@ -2182,6 +2235,13 @@ mod tests {
         assert!(mobs.is_empty());
         let Event::Burst { pos, .. } = ev[burst] else { unreachable!() };
         assert!(dist2(pos, [12.0, 1.5, 0.0]) < 3.0 * 3.0, "{pos:?}");
+        // Creeper damage: 43 at its heart, lethal (20) within 2.5 nodes,
+        // about 17 at 3, and none past 6; less sheltered.
+        assert_eq!(burst_damage(0.0, 1.0), 43.0);
+        assert!(burst_damage(2.4, 1.0) >= 20.0 && burst_damage(2.6, 1.0) < 20.0);
+        assert!((burst_damage(3.0, 1.0) - 16.75).abs() < 0.01);
+        assert_eq!(burst_damage(6.0, 1.0), 0.0);
+        assert!(burst_damage(1.0, 0.5) < burst_damage(1.0, 1.0) / 2.0);
         // Backing off as it lights, the player gets away: it goes out.
         let mut mobs = Mobs::new();
         mobs.add_pack(Kind::Wisp, &[[0.0, 2.0, 0.0]], &mut rng);
@@ -2206,11 +2266,12 @@ mod tests {
         t.water.push((x, y, z));
         let ev = run(&mut mobs, &t, &far, 0.1, &mut rng);
         assert!(ev.contains(&Event::Removed(FIRST_ID)), "{ev:?}");
-        // Hit: knocked back, and hurt (6 HP: a stone sword's two blows).
+        // Hit: knocked back, and hurt (20 HP, as a creeper: four blows of
+        // a steel sword).
         let mut mobs = Mobs::new();
         mobs.add_pack(Kind::Wisp, &[[0.0, 2.0, 0.0]], &mut rng);
-        assert_eq!(mobs.punch(FIRST_ID, 2, [-1.0, 1.5, 0.0], 4).unwrap().hp, 2);
-        assert_eq!(mobs.harm(FIRST_ID, None, [-1.0, 1.5, 0.0], 3).unwrap().hp, 0);
+        assert_eq!(mobs.punch(FIRST_ID, 2, [-1.0, 1.5, 0.0], 4).unwrap().hp, 16);
+        assert_eq!(mobs.harm(FIRST_ID, None, [-1.0, 1.5, 0.0], 18).unwrap().hp, 0);
     }
 
     #[test]

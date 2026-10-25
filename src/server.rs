@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use log::{debug, info, warn};
 
 use crate::boats;
+use crate::carts;
 use crate::auth::{self, Account, AuthStore, NameError};
 use crate::content::{self, Media};
 use crate::messages::{self, *};
@@ -171,10 +172,10 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(30);
 /// docs/features.md. The PC build can take more (Setup::max_players).
 pub const MAX_PLAYERS: usize = 6;
 /// Peer ids: 0 and 1 are Luanti's "none" and the server. A player's object
-/// id is their peer id, so peer ids stay below the boats', mobs' and dropped
-/// items' object ids (from boats::FIRST_ID up).
+/// id is their peer id, so peer ids stay below the carts', boats', mobs' and
+/// dropped items' object ids (from carts::FIRST_ID up).
 const FIRST_PEER_ID: u16 = 2;
-const LAST_PEER_ID: u16 = crate::boats::FIRST_ID - 1;
+const LAST_PEER_ID: u16 = crate::carts::FIRST_ID - 1;
 
 /// The peer id for a new connection, as Luanti's Connection::createPeer
 /// picks it: the next one after the last given out that nobody is using,
@@ -207,6 +208,9 @@ Chat works as usual; type /help for the commands."
 const SERVER_NAME: &str = if cfg!(target_os = "espidf") { "ESP32-S3 Minetest server" } else { "Minetest server (esp32-s3-minetest PC build)" };
 /// How often dropped items are moved on.
 const ITEM_STEP_INTERVAL: Duration = Duration::from_millis(50);
+/// How fast a cart's rider's view turns with it round a corner, in degrees
+/// a second.
+const CART_TURN_RATE: f32 = 360.0;
 /// builtin's item_drop: thrown from 1.2 nodes above the feet, at 2.9
 /// nodes per second along the look direction plus 2 upwards.
 const DROP_HEIGHT: f32 = 1.2;
@@ -355,8 +359,14 @@ struct Peer {
     guide: craftguide::Guide,
     /// The bed they lie in, if any.
     in_bed: Option<InBed>,
-    /// The boat they sit in, if any.
-    in_boat: Option<u16>,
+    /// The boat they sit in, or the cart they stand in, if any.
+    riding: Option<u16>,
+    /// Their view turning with the cart they ride round a corner: the
+    /// way they looked when it began, how far it turns (degrees,
+    /// anticlockwise), and how far it has turned so far. Each step is sent
+    /// from where it began, so the client's own reports of where it looks
+    /// (a little behind) don't cut it short.
+    cart_turn: Option<(f32, f32, f32)>,
     /// Already reported: nothing heard from them for LINK_QUIET, and none
     /// of our packets acknowledged for LINK_QUIET (see watch_links).
     quiet_reported: bool,
@@ -381,11 +391,16 @@ impl Peer {
     fn posture(&self) -> Posture {
         if self.in_bed.is_some() {
             Posture::Lie
-        } else if self.in_boat.is_some() {
+        } else if self.riding.is_some_and(boats::is_boat_id) {
             Posture::Sit
         } else {
             Posture::Stand
         }
+    }
+
+    /// What they ride and where on it (attached to it).
+    fn seat(&self) -> Option<(u16, [f32; 3])> {
+        self.riding.map(|id| (id, if boats::is_boat_id(id) { boats::SEAT } else { carts::SEAT }))
     }
 
     fn new(id: u16) -> Self {
@@ -432,7 +447,8 @@ impl Peer {
             fire_sound: None,
             guide: craftguide::Guide::default(),
             in_bed: None,
-            in_boat: None,
+            riding: None,
+            cart_turn: None,
             quiet_reported: false,
             unacked_reported: false,
             inventory_unsent: false,
@@ -538,8 +554,12 @@ pub struct Server {
     /// Dropped items, and when they were last moved on.
     items: Items,
     items_stepped: Instant,
-    /// Boats (boats.rs), saved beside the items.
+    /// Boats (boats.rs) and carts (carts.rs), saved beside the items; each
+    /// moving cart's rolling sound, and when each player last punched one.
     boats: boats::Boats,
+    carts: carts::Carts,
+    cart_sounds: HashMap<u16, i32>,
+    cart_punches: HashMap<u16, Instant>,
     /// Hostile mobs (mobs.rs), when on; when spawning was last tried.
     mobs: Mobs,
     mobs_spawned: Instant,
@@ -950,6 +970,9 @@ impl Server {
             building: HashSet::new(),
             built: Default::default(),
             boats: items.path().map_or_else(boats::Boats::default, |p| boats::Boats::open(p.with_file_name("boats.txt"))),
+            carts: items.path().map_or_else(carts::Carts::default, |p| carts::Carts::open(p.with_file_name("carts.txt"))),
+            cart_sounds: HashMap::new(),
+            cart_punches: HashMap::new(),
             items,
             clock,
             door_owners,
@@ -1670,10 +1693,13 @@ impl Server {
         peer.save(&self.players);
         peer.save_inventory(&self.inventories);
         info!("Peer {} ({}) {how}", peer.id, peer.display_name());
-        // Their boat is left empty (its on_detach_child).
-        if let Some(b) = peer.in_boat.and_then(|id| self.boats.get_mut(id)) {
+        // Their boat or cart is left empty (its on_detach_child).
+        if let Some(b) = peer.riding.and_then(|id| self.boats.get_mut(id)) {
             b.driver = None;
             b.auto = false;
+        }
+        if let Some(c) = peer.riding.and_then(|id| self.carts.get_mut(id)) {
+            c.driver = None;
         }
         if peer.ready {
             self.remove_player_object(peer.id);
@@ -1856,15 +1882,19 @@ impl Server {
             skin: &self.skin_texture(&peer.skin),
             zoom_fov: peer.zoom_fov,
             posture: peer.posture(),
-            attached: peer.in_boat.map(|b| (b, boats::SEAT)),
+            attached: peer.seat(),
         });
 
         // The client's own object must be in its first object packet: from
         // then on it calls LocalPlayer::isDead(), which needs that object.
-        // Then the boats, before the players who may sit in them.
+        // Then the boats and carts, before the players who may ride them
+        // and the items that may be in them.
         let mut for_new = vec![(new_id, new_init.clone())];
         for b in self.boats.iter() {
             for_new.push((b.id, boats::init_data(b)));
+        }
+        for c in self.carts.iter() {
+            for_new.push((c.id, carts::init_data(c)));
         }
         let mut others = Vec::new();
         for (addr, p) in &self.peers {
@@ -1878,7 +1908,7 @@ impl Server {
                     skin: &self.skin_texture(&p.skin),
                     zoom_fov: p.zoom_fov,
                     posture: p.posture(),
-                    attached: p.in_boat.map(|b| (b, boats::SEAT)),
+                    attached: p.seat(),
                 })));
                 others.push(*addr);
             }
@@ -1898,6 +1928,10 @@ impl Server {
             others.len()
         );
         self.send_command(new, 0, &build_remove_add(&[], &for_new));
+        let in_carts: Vec<(u16, Vec<u8>)> = self.items.iter().filter_map(|d| d.carried.map(|c| (d.id, attach_message(c, [0.0; 3])))).collect();
+        if !in_carts.is_empty() {
+            self.send_command(new, 0, &build_object_messages(&in_carts));
+        }
         for hum in hums {
             self.send_command(new, 0, &hum);
         }
@@ -1971,8 +2005,8 @@ impl Server {
         // player would be stuck walking (or frozen) until the next change.
         // Lying in bed or sitting in a boat, the animation stays
         // (player_api's player_attached).
-        let anim = if peer.in_bed.is_some() || peer.in_boat.is_some() { peer.anim } else { animation_for(&pp) };
-        let in_boat = peer.in_boat.is_some();
+        let anim = if peer.in_bed.is_some() || peer.riding.is_some() { peer.anim } else { animation_for(&pp) };
+        let riding = peer.riding.is_some();
         if anim != peer.anim {
             peer.anim = anim;
             let packet = build_object_messages(&[(id, set_animation_message(anim))]);
@@ -1989,10 +2023,10 @@ impl Server {
         if active {
             self.wake();
         }
-        // In a boat, where they are is where the boat is: other clients
+        // In a boat or cart, where they are is where it is: other clients
         // put them there themselves (Luanti doesn't take an attached
         // player's position either).
-        if !moved || in_boat {
+        if !moved || riding {
             return;
         }
 
@@ -2029,9 +2063,15 @@ impl Server {
         if !peer.ready {
             return;
         }
+        // The position it carries is taken as a TOSERVER_PLAYERPOS is
+        // (Luanti's process_PlayerPos): where they are, which way they
+        // look, and the keys they hold.
         if let Some(pp) = &msg.pos {
             peer.pos_bs = pp.pos_bs;
             peer.speed_bs = pp.speed_bs;
+            peer.pitch = pp.pitch;
+            peer.yaw = pp.yaw;
+            peer.keys = pp.keys;
         }
         let name = peer.display_name().to_string();
         let body = [peer.pos_bs[0] / 10.0, peer.pos_bs[1] / 10.0 + 1.0, peer.pos_bs[2] / 10.0];
@@ -2112,6 +2152,15 @@ impl Server {
                 match msg.action {
                     INTERACT_START_DIGGING => self.punch_boat(from, id, body),
                     INTERACT_PLACE => self.board_boat(from, id, body),
+                    _ => {}
+                }
+                return;
+            }
+            if carts::is_cart_id(id) && !dead {
+                let (pitch, yaw, keys) = msg.pos.as_ref().map_or((0.0, 0.0, 0), |p| (p.pitch, p.yaw, p.keys));
+                match msg.action {
+                    INTERACT_START_DIGGING => self.punch_cart(from, id, body, msg.item as usize, (look_dir(pitch, yaw), keys & KEY_SNEAK != 0)),
+                    INTERACT_PLACE => self.board_cart(from, id, body),
                     _ => {}
                 }
                 return;
@@ -2445,6 +2494,16 @@ impl Server {
                     }
                     return;
                 }
+                // A cart goes on a rail (its on_place): the one pointed at,
+                // or the one in front of it.
+                if wielded.is_some_and(|s| slot < HOTBAR_SIZE && s.id == content::ITEM_CART) {
+                    if in_reach(above) {
+                        self.place_cart(from, slot, under, above);
+                    } else {
+                        self.send_inventory(from);
+                    }
+                    return;
+                }
                 // A boat goes on water (its on_place), and nowhere else.
                 if wielded.is_some_and(|s| slot < HOTBAR_SIZE && s.id == content::ITEM_BOAT) {
                     if in_reach(under) {
@@ -2492,8 +2551,9 @@ impl Server {
                 // Pointed at something placing replaces (tall grass, a
                 // flower, a snow layer), the node goes in its place, as
                 // builtin's item_place_node does and the client predicts;
-                // it then stands on what is under that.
-                let (under, above) = if content::buildable_to(support) {
+                // it then stands on what is under that. (Not a liquid: a
+                // node can't be pointed at one.)
+                let (under, above) = if content::buildable_to(support) && !content::is_liquid(support) {
                     ([under[0], under[1] - 1, under[2]], under)
                 } else {
                     (under, above)
@@ -3586,7 +3646,7 @@ impl Server {
             }
         }
         let radius = tnt::blast_radius(count);
-        self.blast(center, radius, 2, &format!("TNT exploded at {center:?} ({count} together, radius {radius})"), "blown up");
+        self.blast(center, radius, 2, &format!("TNT exploded at {center:?} ({count} together, radius {radius})"), "blown up", Hurt::Tnt);
     }
 
     /// A blast of `radius` at `center` (TNT's, or a wisp's): what is in it
@@ -3594,7 +3654,7 @@ impl Server {
     /// sand and gravel above come down; players and mobs near are hurt
     /// (`death` says how a player died) and thrown back, and items thrown.
     /// The TNT within `middle` nodes went with it.
-    fn blast(&mut self, center: NodePos, radius: i32, middle: i32, what: &str, death: &str) {
+    fn blast(&mut self, center: NodePos, radius: i32, middle: i32, what: &str, death: &str, hurt: Hurt) {
         let started = Instant::now();
         let mut drops: Vec<Stack> = Vec::new();
         let mut chained = Vec::new();
@@ -3735,7 +3795,7 @@ impl Server {
         }
         let bits = most.iter().max_by_key(|(_, n)| *n).map(|(id, _)| *id);
         self.blast_effects(center, radius, bits);
-        self.blast_physics(center, radius, death);
+        self.blast_physics(center, radius, death, hurt);
         self.eject(center, radius, drops);
         info!(
             "{what}: {} nodes, worked out in {worked_out} ms, {} ms in all",
@@ -3745,35 +3805,50 @@ impl Server {
     }
 
     /// A blast's push (entity_physics): players and mobs within its damage
-    /// radius lose HP and are thrown back; dropped items are thrown.
-    fn blast_physics(&mut self, center: NodePos, radius: i32, death: &str) {
+    /// radius lose HP and are thrown back; dropped items are thrown. TNT
+    /// hurts as minetest_game's does; a wisp's burst as a Minecraft creeper
+    /// does, less for those partly sheltered from it.
+    fn blast_physics(&mut self, center: NodePos, radius: i32, death: &str, hurt: Hurt) {
         let c = [center.0 as f32, center.1 as f32, center.2 as f32];
-        let reach = tnt::damage_radius(radius);
+        let reach = match hurt {
+            Hurt::Tnt => tnt::damage_radius(radius),
+            Hurt::Burst => mobs::BURST_REACH,
+        };
+        let terrain = MobTerrain(&self.world);
+        let damage = |dist: f32, feet: [f32; 3], half_width: f32, height: f32| match hurt {
+            Hurt::Tnt => tnt::damage(dist, radius),
+            Hurt::Burst => mobs::burst_damage(dist, mobs::exposure(c, feet, half_width, height, &terrain)),
+        };
         let away = |p: [f32; 3]| {
             let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
             let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
             (len, if len > 0.0 { d.map(|v| v / len) } else { [0.0, 1.0, 0.0] })
         };
-        let hurt: Vec<(SocketAddr, f32, [f32; 3])> = self
+        let hurt: Vec<(SocketAddr, f32, [f32; 3], u16)> = self
             .peers
             .iter()
             .filter(|(_, p)| p.ready && p.hp > 0)
             .filter_map(|(a, p)| {
-                let (dist, dir) = away(p.pos_bs.map(|v| v / 10.0));
-                (dist <= reach).then_some((*a, dist, dir))
+                let feet = p.pos_bs.map(|v| v / 10.0);
+                let (dist, dir) = away(feet);
+                (dist <= reach).then(|| (*a, dist, dir, damage(dist, feet, 0.3, 1.7).round() as u16))
             })
             .collect();
-        for (addr, dist, dir) in hurt {
+        let mobs: Vec<(u16, f32, u16)> = self
+            .mobs
+            .iter()
+            .map(|m| (m.id, away(m.pos).0, m))
+            .filter(|m| m.1 <= reach)
+            .map(|(id, dist, m)| (id, dist, damage(dist, m.pos, m.def().half_width, m.def().height).round() as u16))
+            .collect();
+        for (addr, dist, dir, damage) in hurt {
             let push = tnt::knockback(dir, dist, radius);
             self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
-            let damage = tnt::damage(dist, radius).round() as u16;
             if damage > 0 {
                 self.hurt(addr, damage, death);
             }
         }
-        let mobs: Vec<(u16, f32)> = self.mobs.iter().map(|m| (m.id, away(m.pos).0)).filter(|m| m.1 <= reach).collect();
-        for (id, dist) in mobs {
-            let damage = tnt::damage(dist, radius).round() as u16;
+        for (id, _dist, damage) in mobs {
             if let Some(hit) = self.mobs.harm(id, None, c, damage.max(1)) {
                 self.mob_hit(id, hit);
             }
@@ -4872,14 +4947,14 @@ impl Server {
             return;
         };
         if driver == Some(peer.id) {
-            self.leave_boat(from, true);
+            self.dismount(from, true);
             return;
         }
-        if driver.is_some() || !near || peer.in_bed.is_some() || peer.in_boat.is_some() {
+        if driver.is_some() || !near || peer.in_bed.is_some() || peer.riding.is_some() {
             return;
         }
         let sit = Animation::new(ANIM_SIT, ANIM_FPS);
-        peer.in_boat = Some(id);
+        peer.riding = Some(id);
         peer.anim = sit;
         peer.yaw = boat_yaw.to_degrees();
         let (pid, name, pitch, pos_bs, skin, zoom) = (peer.id, peer.display_name().to_string(), peer.pitch, peer.pos_bs, peer.skin.clone(), peer.zoom_fov);
@@ -4898,19 +4973,43 @@ impl Server {
         self.send_command(from, 0, &build_move_player(pos_bs, pitch, boat_yaw.to_degrees()));
     }
 
-    /// Out of the boat (right-clicked again, or punched): standing, and,
-    /// if `step_off`, a little above where it is. (Dead, or gone, they
-    /// stay where they are.) Returns whether they were in one.
-    fn leave_boat(&mut self, from: SocketAddr, step_off: bool) -> bool {
+    /// Out of the boat or cart (right-clicked again, or punched):
+    /// standing, and, out of a boat, if `step_off`, a little above it.
+    /// (Dead, or gone, they stay where they are; out of a cart, as the
+    /// carts mod does, too.) Returns whether they were in one.
+    fn dismount(&mut self, from: SocketAddr, step_off: bool) -> bool {
         let Some(peer) = self.peers.get_mut(&from) else {
             return false;
         };
-        let Some(id) = peer.in_boat.take() else {
+        let Some(id) = peer.riding.take() else {
             return false;
         };
         let stand = Animation::new(ANIM_STAND, ANIM_FPS);
         peer.anim = stand;
         let (pid, name, pitch, yaw, skin, zoom) = (peer.id, peer.display_name().to_string(), peer.pitch, peer.yaw, peer.skin.clone(), peer.zoom_fov);
+        if carts::is_cart_id(id) {
+            let at = self.carts.get_mut(id).map(|c| {
+                c.driver = None;
+                c.pos_bs()
+            });
+            if let Some(peer) = self.peers.get_mut(&from) {
+                peer.cart_turn = None;
+            }
+            info!("{name} gets out of cart {id}");
+            self.send_to_players(&build_object_messages(&[(pid, not_attached_message())]));
+            self.send_command(from, 0, &build_eye_offset([0.0; 3]));
+            // Out on top of it (a stopped cart is solid), unless dead or
+            // gone.
+            if let (true, Some(at)) = (step_off, at) {
+                let pos_bs = [at[0], at[1] + 5.0, at[2]];
+                if let Some(peer) = self.peers.get_mut(&from) {
+                    peer.pos_bs = pos_bs;
+                }
+                self.send_command(from, 0, &build_move_player(pos_bs, pitch, yaw));
+                self.announce_position(from);
+            }
+            return true;
+        }
         let at = self.boats.get_mut(id).map(|b| {
             b.driver = None;
             b.auto = false;
@@ -4948,7 +5047,7 @@ impl Server {
             return;
         };
         if driver == Some(peer.id) {
-            self.leave_boat(from, false);
+            self.dismount(from, false);
         } else if driver.is_some() || !near {
             return;
         }
@@ -4971,7 +5070,7 @@ impl Server {
         if self.boats.len() == 0 {
             return;
         }
-        let keys: Vec<(u16, u32)> = self.peers.values().filter(|p| p.in_boat.is_some()).map(|p| (p.id, p.keys)).collect();
+        let keys: Vec<(u16, u32)> = self.peers.values().filter(|p| p.riding.is_some_and(boats::is_boat_id)).map(|p| (p.id, p.keys)).collect();
         let controls = |driver: u16| keys.iter().find(|(id, _)| *id == driver).map(|&(_, k)| boats::Controls::from_keys(k));
         let terrain = MobTerrain(&self.world);
         let events = self.boats.step(dt, &terrain, &controls);
@@ -4993,6 +5092,208 @@ impl Server {
         }
         if !moved.is_empty() {
             self.send_to_players(&build_object_messages(&moved));
+        }
+    }
+
+    // -------------------------------------------------------------------
+    // Carts (carts.rs)
+    // -------------------------------------------------------------------
+
+    /// The cart item's on_place: on the rail pointed at, or the one in
+    /// front of the node pointed at; else nothing.
+    fn place_cart(&mut self, from: SocketAddr, slot: usize, under: [i16; 3], above: [i16; 3]) {
+        let at = [under, above].into_iter().map(|p| [p[0] as i32, p[1] as i32, p[2] as i32]).find(|&p| carts::is_rail_node(self.world.node((p[0], p[1], p[2]))));
+        let Some(at) = at else {
+            self.send_inventory(from);
+            return;
+        };
+        let name = self.peers.get(&from).map(|p| p.display_name().to_string()).unwrap_or_default();
+        let Some(id) = self.carts.add(at) else {
+            self.tell(from, "There are too many carts in the world already.");
+            self.send_inventory(from);
+            return;
+        };
+        info!("{name} put a cart on the rail at {at:?} ({} carts)", self.carts.len());
+        if let Some(peer) = self.peers.get_mut(&from) {
+            peer.inventory.take_one(slot);
+        }
+        self.inventory_changed(from);
+        self.play_sound_near(-1, "default_place_node_metal", 0.5, above.map(|v| v as f32 * 10.0), HEARING);
+        if let Some(c) = self.carts.get(id) {
+            let added = build_remove_add(&[], &[(id, carts::init_data(c))]);
+            self.send_to_players(&added);
+        }
+    }
+
+    /// Right-clicking a cart (its on_rightclick): its driver gets out;
+    /// with nobody in it, the player gets in, standing, their eyes
+    /// lowered (carts:manage_attachment).
+    fn board_cart(&mut self, from: SocketAddr, id: u16, body: [f32; 3]) {
+        let Some(c) = self.carts.get(id) else {
+            return;
+        };
+        let near = (0..3).map(|i| (c.pos[i] - body[i]).powi(2)).sum::<f32>().sqrt() <= MAX_INTERACT_DISTANCE + 1.0;
+        let driver = c.driver;
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
+        if driver == Some(peer.id) {
+            self.dismount(from, true);
+            return;
+        }
+        if driver.is_some() || !near || peer.in_bed.is_some() || peer.riding.is_some() {
+            return;
+        }
+        let stand = Animation::new(ANIM_STAND, ANIM_FPS);
+        peer.riding = Some(id);
+        peer.anim = stand;
+        let (pid, name) = (peer.id, peer.display_name().to_string());
+        if let Some(c) = self.carts.get_mut(id) {
+            c.driver = Some(pid);
+        }
+        info!("{name} gets into cart {id}");
+        self.send_to_players(&build_object_messages(&[(pid, attach_message(id, carts::SEAT)), (pid, set_animation_message(stand))]));
+        self.send_command(from, 0, &build_eye_offset(carts::EYES));
+    }
+
+    /// Punching a cart (its on_punch). Sneaking, the player picks it up:
+    /// its driver gets out where it last was on the rails, what it carries
+    /// falls out, and it goes into the puncher's inventory (or is dropped).
+    /// Otherwise it is pushed the way they look, harder for a full swing
+    /// of what they hold.
+    fn punch_cart(&mut self, from: SocketAddr, id: u16, body: [f32; 3], slot: usize, (look, sneak): ([f32; 3], bool)) {
+        let Some(c) = self.carts.get(id) else {
+            return;
+        };
+        let near = (0..3).map(|i| (c.pos[i] - body[i]).powi(2)).sum::<f32>().sqrt() <= MAX_INTERACT_DISTANCE + 1.0;
+        let Some(peer) = self.peers.get(&from) else {
+            return;
+        };
+        let (pid, name) = (peer.id, peer.display_name().to_string());
+        if !near && c.driver != Some(pid) {
+            return;
+        }
+        if sneak {
+            if let Some(driver) = c.driver {
+                let addr = self.peers.iter().find(|(_, p)| p.id == driver).map(|(a, _)| *a);
+                if let Some(addr) = addr {
+                    self.dismount(addr, false);
+                }
+            }
+            let Some(c) = self.carts.remove(id) else {
+                return;
+            };
+            if let Some(sound) = self.cart_sounds.remove(&id) {
+                self.send_to_players(&build_stop_sound(sound));
+            }
+            self.send_to_players(&build_remove_add(&[id], &[]));
+            for item in self.items.let_go(id) {
+                self.send_to_players(&build_object_messages(&[(item, not_attached_message())]));
+                self.send_item_position(item);
+            }
+            let left = self.peers.get_mut(&from).map_or(1, |p| p.inventory.add(Stack::new(content::ITEM_CART, 1)));
+            info!("{name} took cart {id} ({} carts left)", self.carts.len());
+            if left > 0 {
+                self.spawn_item(Stack::new(content::ITEM_CART, left), (c.pos, [0.0; 3]));
+            }
+            self.inventory_changed(from);
+            return;
+        }
+        // How full a swing: the time since their last punch of a cart, out
+        // of the punch interval of what they hold (time_from_last_punch).
+        let wielded = self.peers.get(&from).and_then(|p| p.inventory.get(slot)).filter(|_| slot < HOTBAR_SIZE).map(|s| s.id);
+        let interval = content::caps_of(wielded).full_punch_interval;
+        let interval = if interval > 0.0 { interval } else { 1.0 };
+        let now = Instant::now();
+        let since = self.cart_punches.insert(pid, now).map_or(interval, |t| now.duration_since(t).as_secs_f32());
+        let swing = since.min(interval) / interval;
+        let rails = CartRails(&self.world);
+        if let Some(c) = self.carts.get_mut(id) {
+            c.punch(&rails, pid, look, swing);
+        }
+    }
+
+    /// Move the carts on, steered by their drivers' keys, carrying their
+    /// riders and items; tell clients.
+    fn step_carts(&mut self, dt: f32) {
+        if self.carts.len() == 0 {
+            return;
+        }
+        let keys: Vec<(u16, u32)> = self.peers.values().filter(|p| p.riding.is_some_and(carts::is_cart_id)).map(|p| (p.id, p.keys)).collect();
+        let controls = |driver: u16| keys.iter().find(|(id, _)| *id == driver).map(|&(_, k)| carts::Controls::from_keys(k));
+        let rails = CartRails(&self.world);
+        let events = self.carts.step(dt, &rails, &controls);
+        let mut messages = Vec::new();
+        for e in events {
+            match e {
+                carts::Event::Moved(id) => {
+                    if let Some(c) = self.carts.get(id) {
+                        messages.push((id, carts::position(c)));
+                        let pos = c.pos;
+                        self.items.carry_to(id, pos);
+                    }
+                }
+                carts::Event::Turned(id, by) => {
+                    if let Some(c) = self.carts.get(id) {
+                        messages.push((id, carts::animation(c)));
+                    }
+                    // Its rider turns with it (unlike minetest_game, whose
+                    // riders keep looking the way they were).
+                    if by != 0.0 {
+                        if let Some(peer) = self.peers.values_mut().find(|p| p.riding == Some(id)) {
+                            // Another corner before the last turn is done:
+                            // on from where it has got to.
+                            peer.cart_turn = Some(match peer.cart_turn {
+                                Some((from, total, done)) => (from + done, total - done + by.to_degrees(), 0.0),
+                                None => (peer.yaw, by.to_degrees(), 0.0),
+                            });
+                        }
+                    }
+                }
+                carts::Event::Solid(id) => {
+                    if let Some(c) = self.carts.get(id) {
+                        messages.push((id, carts::properties(c)));
+                    }
+                }
+                carts::Event::Sound(id, gain) => {
+                    if let Some(old) = self.cart_sounds.remove(&id) {
+                        self.send_to_players(&build_stop_sound(old));
+                    }
+                    if let (Some(gain), Some(pos)) = (gain, self.carts.get(id).map(|c| c.pos_bs())) {
+                        let sound = self.new_sound_id();
+                        self.cart_sounds.insert(id, sound);
+                        self.send_to_players(&build_play_sound_object(sound, carts::SOUND, gain, pos, id, true));
+                    }
+                }
+                carts::Event::Collect(id) => {
+                    if let Some(pos) = self.carts.get(id).map(|c| c.pos) {
+                        for item in self.items.carry_near(id, pos) {
+                            messages.push((item, attach_message(id, [0.0; 3])));
+                        }
+                    }
+                }
+            }
+        }
+        // The riders are where their carts are, and turn with them, a
+        // quarter turn in a quarter of a second.
+        let riders: Vec<(SocketAddr, u16)> = self.peers.iter().filter_map(|(a, p)| p.riding.filter(|r| carts::is_cart_id(*r)).map(|r| (*a, r))).collect();
+        let mut turns = Vec::new();
+        for (addr, cart) in riders {
+            if let (Some(pos), Some(peer)) = (self.carts.get(cart).map(|c| c.pos_bs()), self.peers.get_mut(&addr)) {
+                peer.pos_bs = pos;
+                if let Some((from, total, done)) = peer.cart_turn {
+                    let done = (done.abs() + CART_TURN_RATE * dt).min(total.abs()) * total.signum();
+                    peer.yaw = (from + done).rem_euclid(360.0);
+                    peer.cart_turn = (done != total).then_some((from, total, done));
+                    turns.push((addr, build_move_player(pos, peer.pitch, peer.yaw)));
+                }
+            }
+        }
+        for (addr, packet) in turns {
+            self.send_command(addr, 0, &packet);
+        }
+        if !messages.is_empty() {
+            self.send_to_players(&build_object_messages(&messages));
         }
     }
 
@@ -5312,9 +5613,9 @@ impl Server {
                         continue;
                     };
                     self.hurt(addr, damage, kills);
-                    // No knockback in a boat (player_api's
+                    // No knockback in a boat or cart (player_api's
                     // calculate_knockback for attached players).
-                    if self.peers.get(&addr).is_some_and(|p| p.in_boat.is_none()) {
+                    if self.peers.get(&addr).is_some_and(|p| p.riding.is_none()) {
                         self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
                     }
                 }
@@ -5466,7 +5767,9 @@ impl Server {
 
     /// A mob has gone: its hum and whine stop.
     fn stop_mob_sounds(&mut self, id: u16) {
-        self.mob_sparks.remove(&id);
+        if let Some(sparks) = self.mob_sparks.remove(&id) {
+            self.send_to_players(&build_delete_particle_spawner(sparks));
+        }
         if let Some((hum, whine)) = self.mob_sounds.remove(&id) {
             for s in [hum, whine] {
                 if s != 0 {
@@ -5532,18 +5835,22 @@ impl Server {
         let recent = self.mob_blasted.is_some_and(|t| t.elapsed() < Duration::from_secs(1));
         if self.settings.tnt() && !recent {
             self.mob_blasted = Some(Instant::now());
-            self.blast(center, radius, 0, &format!("A wisp burst at {center:?}"), kills);
+            self.blast(center, radius, 0, &format!("A wisp burst at {center:?}"), kills, Hurt::Burst);
         } else {
             let at = pos.map(|v| v * 10.0);
             self.play_sound_near(-1, "tnt_explode", 1.5, at, 64.0);
             self.blast_effects(center, radius, None);
-            self.blast_physics(center, radius, kills);
+            self.blast_physics(center, radius, kills, Hurt::Burst);
         }
     }
 
-    /// Remove every mob (mobs turned off).
+    /// Remove every mob (mobs turned off), and stop their sounds (a
+    /// wisp's hum and whine loop until stopped) and sparks.
     fn clear_mobs(&mut self) {
         let ids = self.mobs.clear();
+        for &id in &ids {
+            self.stop_mob_sounds(id);
+        }
         if !ids.is_empty() {
             self.send_to_players(&build_remove_add(&ids, &[]));
         }
@@ -5779,9 +6086,9 @@ impl Server {
             info!("{name} died");
             self.leave_bones(from);
             // Dead, they get up where they lie (beds' on_dieplayer), and
-            // out of any boat (Luanti detaches the dead).
+            // out of any boat or cart (Luanti detaches the dead).
             self.get_up(from, false);
-            self.leave_boat(from, false);
+            self.dismount(from, false);
             self.event(format!("{name} {death}"));
             self.send_command(from, 0, &build_deathscreen());
             if let Some(peer) = self.peers.get_mut(&from) {
@@ -7010,6 +7317,7 @@ impl Server {
             self.step_falling(dt);
             self.step_mobs(dt);
             self.step_boats(dt);
+            self.step_carts(dt);
         }
         if now.duration_since(self.mobs_spawned) >= mobs::SPAWN_EVERY {
             self.mobs_spawned = now;
@@ -7020,6 +7328,9 @@ impl Server {
         }
         if self.boats.save_if_due() {
             self.note("boats saved", 0);
+        }
+        if self.carts.save_if_due() {
+            self.note("carts saved", 0);
         }
         if self.clock.save_if_due() {
             self.note("time saved", 0);
@@ -7240,6 +7551,23 @@ fn look_dir(pitch: f32, yaw: f32) -> [f32; 3] {
     [p.cos() * y.cos(), p.sin(), p.cos() * y.sin()]
 }
 
+/// How a blast hurts: as minetest_game's TNT, or as a Minecraft creeper
+/// (a wisp's burst).
+#[derive(Clone, Copy)]
+enum Hurt {
+    Tnt,
+    Burst,
+}
+
+/// The rails as the carts see them.
+struct CartRails<'a>(&'a World);
+
+impl carts::Rails for CartRails<'_> {
+    fn node(&self, p: [i32; 3]) -> u16 {
+        self.0.node((p[0], p[1], p[2]))
+    }
+}
+
 /// The world as the mobs see it.
 struct MobTerrain<'a>(&'a World);
 
@@ -7454,7 +7782,7 @@ mod tests {
         assert_eq!(free_peer_id(5, &busy), Some(7));
         assert_eq!(free_peer_id(LAST_PEER_ID, &[LAST_PEER_ID].into()), Some(FIRST_PEER_ID));
         assert_eq!(free_peer_id(LAST_PEER_ID + 1, &none), Some(LAST_PEER_ID));
-        assert!(LAST_PEER_ID < crate::boats::FIRST_ID);
+        assert!(LAST_PEER_ID < crate::carts::FIRST_ID);
         // A long run of connections, each gone again: ids stay in range.
         let mut next = FIRST_PEER_ID;
         for _ in 0..100_000 {

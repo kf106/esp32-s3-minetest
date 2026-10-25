@@ -1,0 +1,14 @@
+kit 1
+1 esp:birch_leaves 3
+2 esp:bush_leaves 4
+4 esp:rail 23
+5 esp:brakerail 16
+6 esp:powerrail 20
+7 esp:bush_sapling 2
+18 esp:birch_wood 21
+craft 1 esp:birch_wood 8
+craft 2 esp:steel_ingot 1
+craft 3 esp:steel_ingot 1
+craft 4 esp:mese_crystal 8
+craft 6 esp:steel_ingot 1
+craft 7 esp:birch_wood 7

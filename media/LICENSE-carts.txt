@@ -1,0 +1,27 @@
+Carts: the model, textures and sounds from Minetest Game's carts mod
+(https://github.com/luanti-org/minetest_game, mods/carts), unchanged,
+under their original names:
+
+  carts_cart.b3d, carts_cart.png, carts_cart_front.png,
+  carts_cart_side.png, carts_cart_top.png, carts_rail_*.png,
+  carts_cart_moving.1.ogg, carts_cart_moving.2.ogg, carts_cart_moving.3.ogg
+
+Credits, from that mod's license.txt and README.md:
+
+Media are CC0 (https://creativecommons.org/share-your-work/public-domain/cc0/),
+except where another licence is named.
+
+Originally from PixelBOX (Gambit), "permissive license":
+  carts_cart_side.png, carts_cart_top.png, carts_cart_front.png*,
+  carts_cart.png*
+  (* modified by sofar)
+
+sofar + stujones11 (CC0):
+  carts_cart.b3d (the model was originally designed by stujones11)
+
+hexafraction, modified by sofar:
+  carts_rail_*.png
+
+YleArkisto, http://www.freesound.org/people/YleArkisto/sounds/253159/
+(CC BY 3.0, https://creativecommons.org/licenses/by/3.0/):
+  carts_cart_moving.*.ogg

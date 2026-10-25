@@ -1030,6 +1030,8 @@ const LOOT: &[Loot] = &[
     Loot { kinds: SANDSTONE | DESERT | ICE, ..loot("esp:bucket_water", 0.45, (1, 1)) },
     Loot { y: Some((0, 32768)), kinds: NORMAL, ..loot("esp:bucket_water", 0.45, (1, 1)) },
     Loot { y: Some((-32768, -1)), kinds: NORMAL, ..loot("esp:bucket_lava", 0.45, (1, 1)) },
+    // carts',
+    loot("esp:rail", 0.35, (1, 6)),
     // farming's,
     loot("esp:string", 0.5, (1, 8)),
     loot("esp:wheat", 0.5, (2, 5)),

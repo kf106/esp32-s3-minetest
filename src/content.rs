@@ -19,6 +19,7 @@ use crate::doors;
 use crate::fire;
 use crate::insects;
 use crate::tnt;
+use crate::carts;
 use crate::dungeons;
 use crate::colours;
 use crate::farming;
@@ -145,8 +146,9 @@ pub enum Kind {
     /// (firelike), walked through, built over, washed out by water, and
     /// burning whoever stands in it. It glows, but lights nothing round it.
     Fire,
-    /// Gunpowder (the tnt mod's): a trail on the ground that joins up with
-    /// its neighbours, as rails do (raillike), walked over.
+    /// Gunpowder (the tnt mod's), or a rail (the carts mod's): a trail on
+    /// the ground that joins up with its neighbours (raillike), walked
+    /// over.
     Powder,
     /// A bookshelf: a cube turned to face whoever placed it, opened with a
     /// right-click, holding books.
@@ -369,6 +371,8 @@ pub const ITEM_MAPPING_KIT: u16 = 0x1035;
 pub const ITEM_TNT_STICK: u16 = 0x1036;
 /// The boats mod's boat (an item; placed on water, it is an entity).
 pub const ITEM_BOAT: u16 = 0x1037;
+/// The carts mod's cart (an item; placed on a rail, it is an entity).
+pub const ITEM_CART: u16 = 0x1038;
 pub const ITEM_DOOR_GLASS: u16 = 0x1006;
 /// minetest_game's buckets.
 pub const ITEM_BUCKET_EMPTY: u16 = 0x1007;
@@ -3238,6 +3242,59 @@ pub const NODES: &[Node] = &[
         drop_count: 1,
         kind: Kind::Solid,
     },
+    // The carts mod's rails (raillike, as gunpowder; their textures CC0,
+    // see media/LICENSE-carts.txt): carts.rs.
+    Node {
+        id: carts::RAIL,
+        name: "esp:rail",
+        description: "Rail",
+        tiles: [
+            "carts_rail_straight.png",
+            "carts_rail_curved.png",
+            "carts_rail_t_junction.png",
+            "carts_rail_crossing.png",
+            "carts_rail_straight.png",
+            "carts_rail_straight.png",
+        ],
+        groups: &[("dig_immediate", 2), ("attached_node", 1), ("rail", 1), ("connect_to_raillike", carts::RAILLIKE_GROUP)],
+        drop: carts::RAIL,
+        drop_count: 1,
+        kind: Kind::Powder,
+    },
+    Node {
+        id: carts::POWERRAIL,
+        name: "esp:powerrail",
+        description: "Powered Rail",
+        tiles: [
+            "carts_rail_straight_pwr.png",
+            "carts_rail_curved_pwr.png",
+            "carts_rail_t_junction_pwr.png",
+            "carts_rail_crossing_pwr.png",
+            "carts_rail_straight_pwr.png",
+            "carts_rail_straight_pwr.png",
+        ],
+        groups: &[("dig_immediate", 2), ("attached_node", 1), ("rail", 1), ("connect_to_raillike", carts::RAILLIKE_GROUP)],
+        drop: carts::POWERRAIL,
+        drop_count: 1,
+        kind: Kind::Powder,
+    },
+    Node {
+        id: carts::BRAKERAIL,
+        name: "esp:brakerail",
+        description: "Brake Rail",
+        tiles: [
+            "carts_rail_straight_brk.png",
+            "carts_rail_curved_brk.png",
+            "carts_rail_t_junction_brk.png",
+            "carts_rail_crossing_brk.png",
+            "carts_rail_straight_brk.png",
+            "carts_rail_straight_brk.png",
+        ],
+        groups: &[("dig_immediate", 2), ("attached_node", 1), ("rail", 1), ("connect_to_raillike", carts::RAILLIKE_GROUP)],
+        drop: carts::BRAKERAIL,
+        drop_count: 1,
+        kind: Kind::Powder,
+    },
 ];
 
 /// minetest_game's savanna grass groups.
@@ -3648,6 +3705,15 @@ pub const CRAFTITEMS: &[CraftItem] = &[
         description: "TNT Stick",
         image: "tnt_tnt_stick.png",
         groups: &[("flammable", 5)],
+    },
+    // The carts mod's cart (its model and textures CC0, see
+    // media/LICENSE-carts.txt): placed on a rail, it rolls (carts.rs).
+    CraftItem {
+        id: ITEM_CART,
+        name: "esp:cart",
+        description: "Cart\n(Sneak+Click to pick up)",
+        image: "[inventorycube{carts_cart_top.png{carts_cart_front.png{carts_cart_side.png",
+        groups: &[],
     },
     // The boats mod's boat (its model and pictures CC BY-SA 3.0, see
     // media/LICENSE-boats.txt): placed on water, it is ridden (boats.rs).
@@ -4527,7 +4593,7 @@ pub fn is_vessel(id: u16) -> bool {
 /// fall off (and drop) when it goes: saplings, plants and vessels
 /// (attached_node on a floor).
 pub fn stands_on_floor(id: u16) -> bool {
-    is_sapling(id) || is_vessel(id) || crate::farming::is_attached_plant(id) || tnt::is_powder(id)
+    is_sapling(id) || is_vessel(id) || crate::farming::is_attached_plant(id) || tnt::is_powder(id) || crate::carts::is_rail_node(id)
 }
 
 pub fn is_sapling(id: u16) -> bool {
@@ -4984,6 +5050,26 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("keys_key_skeleton.png", include_bytes!("../media/keys_key_skeleton.png")),
     ("screwdriver.png", include_bytes!("../media/screwdriver.png")),
     ("binoculars_binoculars.png", include_bytes!("../media/binoculars_binoculars.png")),
+    ("carts_cart.b3d", include_bytes!("../media/carts_cart.b3d")),
+    ("carts_cart.png", include_bytes!("../media/carts_cart.png")),
+    ("carts_cart_front.png", include_bytes!("../media/carts_cart_front.png")),
+    ("carts_cart_side.png", include_bytes!("../media/carts_cart_side.png")),
+    ("carts_cart_top.png", include_bytes!("../media/carts_cart_top.png")),
+    ("carts_rail_straight.png", include_bytes!("../media/carts_rail_straight.png")),
+    ("carts_rail_curved.png", include_bytes!("../media/carts_rail_curved.png")),
+    ("carts_rail_t_junction.png", include_bytes!("../media/carts_rail_t_junction.png")),
+    ("carts_rail_crossing.png", include_bytes!("../media/carts_rail_crossing.png")),
+    ("carts_rail_straight_pwr.png", include_bytes!("../media/carts_rail_straight_pwr.png")),
+    ("carts_rail_curved_pwr.png", include_bytes!("../media/carts_rail_curved_pwr.png")),
+    ("carts_rail_t_junction_pwr.png", include_bytes!("../media/carts_rail_t_junction_pwr.png")),
+    ("carts_rail_crossing_pwr.png", include_bytes!("../media/carts_rail_crossing_pwr.png")),
+    ("carts_rail_straight_brk.png", include_bytes!("../media/carts_rail_straight_brk.png")),
+    ("carts_rail_curved_brk.png", include_bytes!("../media/carts_rail_curved_brk.png")),
+    ("carts_rail_t_junction_brk.png", include_bytes!("../media/carts_rail_t_junction_brk.png")),
+    ("carts_rail_crossing_brk.png", include_bytes!("../media/carts_rail_crossing_brk.png")),
+    ("carts_cart_moving.1.ogg", include_bytes!("../media/carts_cart_moving.1.ogg")),
+    ("carts_cart_moving.2.ogg", include_bytes!("../media/carts_cart_moving.2.ogg")),
+    ("carts_cart_moving.3.ogg", include_bytes!("../media/carts_cart_moving.3.ogg")),
     ("boats_boat.obj", include_bytes!("../media/boats_boat.obj")),
     ("boats_inventory.png", include_bytes!("../media/boats_inventory.png")),
     ("boats_wield.png", include_bytes!("../media/boats_wield.png")),
@@ -5436,6 +5522,8 @@ fn sounds_of(id: u16) -> Sounds {
         id if def(id).is_some_and(|n| n.kind == Kind::Post) => wood,
         SIGN_WOOD => wood,
         SIGN_STEEL => sounds_of(CONTENT_STEEL_BLOCK),
+        // Rails: node_sound_metal_defaults.
+        id if crate::carts::is_rail_node(id) => sounds_of(CONTENT_STEEL_BLOCK),
         CONTENT_LADDER_WOOD => wood,
         // minetest_game's node_sound_glass_defaults and _metal_defaults.
         CONTENT_GLASS | CONTENT_MESE_LAMP | CONTENT_OBSIDIAN_GLASS => Sounds {
@@ -5662,6 +5750,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 Kind::Pane => n.tiles[4],
                 Kind::Sign => sign_image(n.id),
                 Kind::Fire => fire::FLAME_IMAGE,
+                Kind::Powder if crate::carts::is_rail_node(n.id) => n.tiles[0],
                 Kind::Powder => tnt::POWDER_IMAGE,
                 Kind::Bug => insects::image(n.id),
                 Kind::BugHidden => hidden_bug_image(n.id),
@@ -5685,6 +5774,7 @@ pub fn itemdef_bytes() -> Vec<u8> {
                 Kind::Pane => n.tiles[4],
                 Kind::Sign => sign_image(n.id),
                 Kind::Fire => fire::FLAME_IMAGE,
+                Kind::Powder if crate::carts::is_rail_node(n.id) => n.tiles[0],
                 Kind::Powder => tnt::POWDER_IMAGE,
                 Kind::Bug => insects::image(n.id),
                 Kind::BugHidden => hidden_bug_image(n.id),
@@ -5713,7 +5803,11 @@ pub fn itemdef_bytes() -> Vec<u8> {
             description: c.description,
             inventory_image: c.image,
             // A boat has its own picture in the hand, twice the size.
-            wield_image: if c.id == ITEM_BOAT { "boats_wield.png" } else { c.image },
+            wield_image: match c.id {
+                ITEM_BOAT => "boats_wield.png",
+                ITEM_CART => "carts_cart_front.png",
+                _ => c.image,
+            },
             wield_scale: if c.id == ITEM_BOAT { [2.0, 2.0, 1.0] } else { [1.0, 1.0, 1.0] },
             place_prediction: "",
             tool_capabilities: Vec::new(),
@@ -6352,7 +6446,9 @@ fn serialize_node(n: &Node) -> Vec<u8> {
             ALPHAMODE_OPAQUE
         } else if liquid || n.kind == Kind::Mist {
             ALPHAMODE_BLEND
-        } else if torch || leaves || sapling || mark || glass || ladder || doorway || trapdoor.is_some() || plant || seed || bed || gate.is_some() || stalk || rooted || n.kind == Kind::Lily || pane {
+        } else if torch || leaves || sapling || mark || glass || ladder || doorway || trapdoor.is_some() || plant || seed || bed || gate.is_some() || stalk || rooted || n.kind == Kind::Lily || pane || n.kind == Kind::Powder {
+            // (Rails and gunpowder too: Luanti's default for raillike
+            // nodes, and the tnt mod's "clip".)
             ALPHAMODE_CLIP
         } else {
             ALPHAMODE_OPAQUE

@@ -22,6 +22,7 @@ mod font;
 mod furnace;
 mod indicator;
 mod boats;
+mod carts;
 mod insects;
 mod inventory;
 mod items;

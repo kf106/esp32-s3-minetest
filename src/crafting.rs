@@ -174,6 +174,34 @@ pub const RECIPES: &[Recipe] = &[
         output: ITEM_BINOCULARS,
         count: 1,
     },
+    // Rails, 18 at a time: steel ingots either side of planks, nothing
+    // and planks; with a mese crystal in the middle, powered rails, with
+    // a coal lump, brake rails. A cart: five steel ingots in a U (carts
+    // mod).
+    Recipe {
+        width: 3,
+        pattern: &[I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), E, I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT)],
+        output: crate::carts::RAIL,
+        count: 18,
+    },
+    Recipe {
+        width: 3,
+        pattern: &[I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), I(ITEM_MESE_CRYSTAL), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT)],
+        output: crate::carts::POWERRAIL,
+        count: 18,
+    },
+    Recipe {
+        width: 3,
+        pattern: &[I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), I(ITEM_COAL_LUMP), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), G("wood"), I(ITEM_STEEL_INGOT)],
+        output: crate::carts::BRAKERAIL,
+        count: 18,
+    },
+    Recipe {
+        width: 3,
+        pattern: &[I(ITEM_STEEL_INGOT), E, I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT), I(ITEM_STEEL_INGOT)],
+        output: ITEM_CART,
+        count: 1,
+    },
     // A boat: five planks in a U (boats mod).
     Recipe {
         width: 3,
@@ -976,6 +1004,20 @@ mod tests {
         let high = [(0, a, 1), (2, a, 1), (3, a, 1), (4, a, 1), (5, a, 1)];
         assert_eq!(result(&grid(&high)), Some((ITEM_BOAT, 1)));
         assert_eq!(burn_time(ITEM_BOAT), 20.0);
+        // rails and carts
+        let (s, w, m, c) = (ITEM_STEEL_INGOT, CONTENT_BIRCH_WOOD, ITEM_MESE_CRYSTAL, ITEM_COAL_LUMP);
+        let rails = |mid: Option<u16>| {
+            let mut g = vec![(0, s, 1), (1, w, 1), (2, s, 1), (3, s, 1), (5, s, 1), (6, s, 1), (7, w, 1), (8, s, 1)];
+            if let Some(mid) = mid {
+                g.push((4, mid, 1));
+            }
+            result(&grid(&g))
+        };
+        assert_eq!(rails(None), Some((crate::carts::RAIL, 18)));
+        assert_eq!(rails(Some(m)), Some((crate::carts::POWERRAIL, 18)));
+        assert_eq!(rails(Some(c)), Some((crate::carts::BRAKERAIL, 18)));
+        let cart = [(3, s, 1), (5, s, 1), (6, s, 1), (7, s, 1), (8, s, 1)];
+        assert_eq!(result(&grid(&cart)), Some((ITEM_CART, 1)));
     }
 
     #[test]

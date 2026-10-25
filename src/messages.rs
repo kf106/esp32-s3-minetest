@@ -64,6 +64,7 @@ pub const TOCLIENT_DETACHED_INVENTORY: u16 = 0x43;
 pub const TOCLIENT_SHOW_FORMSPEC: u16 = 0x44;
 pub const TOCLIENT_MOVEMENT: u16 = 0x45;
 pub const TOCLIENT_HUD_SET_FLAGS: u16 = 0x4c;
+pub const TOCLIENT_EYE_OFFSET: u16 = 0x52;
 pub const TOCLIENT_CLOUD_PARAMS: u16 = 0x54;
 pub const TOCLIENT_SET_LIGHTING: u16 = 0x63;
 pub const TOCLIENT_SRP_BYTES_S_B: u16 = 0x60;
@@ -817,6 +818,18 @@ pub fn attach_message(parent: u16, pos: [f32; 3]) -> Vec<u8> {
     w.into_inner()
 }
 
+/// TOCLIENT_EYE_OFFSET: the player's eyes moved by `offset` (BS units) in
+/// first person and both third-person views (set_eye_offset).
+pub fn build_eye_offset(offset: [f32; 3]) -> Vec<u8> {
+    let mut w = Writer::new(TOCLIENT_EYE_OFFSET);
+    for _ in 0..3 {
+        for v in offset {
+            w.f32(v);
+        }
+    }
+    w.into_inner()
+}
+
 /// AO_CMD_UPDATE_ARMOR_GROUPS {immortal = 1}: punches do it no harm (a
 /// boat's on_activate).
 pub fn immortal_message() -> Vec<u8> {
@@ -1042,15 +1055,22 @@ const AO_CMD_PUNCHED: u8 = 4;
 /// on itself (colliding, if physical) until the next update. BS units, yaw
 /// in degrees.
 pub fn object_position_message(pos_bs: [f32; 3], vel_bs: [f32; 3], acc_bs: [f32; 3], yaw: f32) -> Vec<u8> {
+    moved_message(pos_bs, vel_bs, acc_bs, yaw, Some(0.25))
+}
+
+/// AO_CMD_UPDATE_POSITION, saying how the client gets there: gliding over
+/// `glide` seconds (an entity's move_to, Luanti sending its step time), or
+/// at once (None: set_pos).
+pub fn moved_message(pos_bs: [f32; 3], vel_bs: [f32; 3], acc_bs: [f32; 3], yaw: f32, glide: Option<f32>) -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_UPDATE_POSITION);
     for v in pos_bs.into_iter().chain(vel_bs).chain(acc_bs) {
         w.f32(v);
     }
     w.f32(0.0).f32(yaw).f32(0.0); // rotation
-    w.u8(1) // interpolate
-        .u8(0) // not the end of a movement
-        .f32(0.25); // update interval
+    w.u8(glide.is_some() as u8) // interpolate
+        .u8(glide.is_none() as u8) // the end of a movement (set_pos)
+        .f32(glide.unwrap_or(0.0)); // update interval
     w.into_inner()
 }
 
