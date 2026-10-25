@@ -1,6 +1,6 @@
 # esp32-s3-minetest
 
-**Minetest on a $12 stick:** Minetest Game, rebuilt in Rust, running as a [Luanti](https://www.luanti.org/) server on a $12 ESP32-S3 board the size of a slightly oversized USB stick.
+**Minetest on a $12 stick:** Minetest Game, rebuilt in Rust, running as a [Luanti](https://www.luanti.org/)-compatible server on a $12 ESP32-S3 board the size of a slightly oversized USB stick.
 
 A standard, unmodified Luanti client connects to it over Wi-Fi as it would to any server. The board can join your access point, or run as its own free-standing hotspot. Create an account, explore a generated world, dig and build, craft, smelt, farm, sleep through the night, and play with others: it handles about six players. The world, accounts and inventories are kept on a microSD card, or, without one, in the board's own flash, and the board's small LCD shows the server's status. The same code also builds as an ordinary program for a PC or a VPS.
 
