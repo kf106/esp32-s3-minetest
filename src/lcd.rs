@@ -267,7 +267,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
     // Whether the board runs its own hotspot. Decided at start-up, after
     // this thread starts; when it is, the Join page (its QR code) is shown.
     let mut hotspot = false;
-    // The hotspot hold bar as last drawn (see Status::hotspot_hold).
+    // The BOOT hold bar as last drawn (see Status::boot_hold).
     let mut hold_drawn: Option<f32> = None;
     // The chip's temperature, read every few seconds for the LED's colour
     // (and shown on the Device page).
@@ -294,7 +294,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
                 let colour = chip_temp.map_or(screen::chip_colour(0.0), screen::chip_colour);
                 State::Running { players: st.players.len(), colour }
             };
-            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some(), st.hotspot_window, st.hotspot_hold)
+            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some(), st.boot_window, st.boot_hold)
         };
         if hotspot_now && !hotspot {
             hotspot = true;
@@ -332,12 +332,15 @@ fn run(lcd: Lcd, status: SharedStatus) {
             }
         }
 
-        // While BOOT is watched for a hotspot at start-up, a press is the
-        // start of that hold, not a page turn: the bar shows it instead.
+        // While BOOT is watched at start-up, a press is the start of a
+        // hold, not a page turn: the bar shows it instead. (As a USB drive,
+        // a press restarts the board.) The screen stays on meanwhile.
         let pressed = button.pressed() && !window;
         let hold_changed = hold != hold_drawn;
         if hold_changed {
             hold_drawn = hold;
+        }
+        if window {
             last_press = Instant::now();
         }
         if pressed {

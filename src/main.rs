@@ -86,10 +86,12 @@ const PORT: u16 = 30000;
 /// The BOOT button: GPIO 0, pulled up, low while pressed.
 const PIN_BOOT: i32 = 0;
 /// How long after start-up the BOOT button is watched, and how long it
-/// must be held, to run the board's own hotspot. (Holding it while the
-/// board powers up doesn't work: the chip then waits to be flashed.)
-const HOTSPOT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// must be held, to run the board's own hotspot, or to become a USB
+/// drive. (Holding it while the board powers up
+/// doesn't work: the chip then waits to be flashed.)
+const BOOT_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
 const HOTSPOT_HOLD: std::time::Duration = std::time::Duration::from_secs(1);
+const DRIVE_HOLD: std::time::Duration = std::time::Duration::from_secs(3);
 /// The hotspot's address (the gateway of its own 192.168.4.x network) and
 /// radio channel, and how many devices may join it.
 const HOTSPOT_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(192, 168, 4, 1);
@@ -118,7 +120,7 @@ fn main() -> anyhow::Result<()> {
     // board, see board.rs) if there is one, otherwise the board's own
     // flash. Either is mounted at /sd, so the rest of the server doesn't
     // know which.
-    let sd = (|| -> anyhow::Result<_> {
+    let card = (|| -> anyhow::Result<_> {
         #[cfg(not(board = "es3c28p"))]
         let host = SdMmcHostDriver::new_4bits(
             p.sdmmc1,
@@ -145,21 +147,33 @@ fn main() -> anyhow::Result<()> {
             None::<AnyIOPin>, // no write-protect line
             &SdMmcHostConfiguration::new(),
         )?;
-        let sd = SdCardDriver::new_mmc(host, &SdCardConfiguration::new())?;
-        let fatfs = Fatfs::new_sdcard(0, sd)?;
-        Ok(MountedFatfs::mount(fatfs, MOUNT, 4)?)
+        Ok(SdCardDriver::new_mmc(host, &SdCardConfiguration::new())?)
     })();
-    // Kept until the server stops: dropping it would unmount the card.
-    let _sd = match sd {
-        Ok(mounted) => {
+    // The card's driver stays here, where it doesn't move: the mount
+    // borrows it, and the USB drive reads the card through it.
+    let mut card = card;
+    let sd = match card.as_mut() {
+        Ok(card) => {
+            let info = card.card() as *const esp_idf_svc::sys::sdmmc_card_t;
+            Fatfs::new_sdcard(0, card)
+                .and_then(|fatfs| MountedFatfs::mount(fatfs, MOUNT, 4))
+                .map(|mounted| (mounted, info))
+                .map_err(anyhow::Error::from)
+        }
+        Err(e) => Err(anyhow::anyhow!("{e}")),
+    };
+    // The mount is kept until the server stops: dropping it would unmount
+    // the card. And what the USB drive would show: the card, or the flash.
+    let (sd, drive) = match sd {
+        Ok((mounted, info)) => {
             info!("SD card mounted at {MOUNT}");
-            Some(mounted)
+            (Some(mounted), DriveStorage::Card(info))
         }
         Err(e) => {
             log::warn!("No SD card ({e}): keeping the game in the board's own flash");
-            mount_flash()?;
+            let flash = mount_flash()?;
             status::set_on_flash();
-            None
+            (None, DriveStorage::Flash(flash))
         }
     };
     reset_sd_if_asked();
@@ -187,7 +201,14 @@ fn main() -> anyhow::Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
     // Kept until the server stops: dropping it would switch the hotspot off.
     let mut _hotspot_wifi = None;
-    let ip = if hotspot_asked(&status) {
+    let boot = boot_choice(&status);
+    if boot == Boot::Drive {
+        // The server's own use of the files stops first.
+        drop(sd);
+        usb_drive(drive, &status);
+    }
+    let _sd = sd;
+    let ip = if boot == Boot::Hotspot {
         let driver = WifiDriver::new(p.modem, sysloop.clone(), Some(nvs))?;
         let wifi = start_hotspot(driver, sysloop, &config.hotspot, &status)?;
         let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
@@ -320,49 +341,252 @@ unsafe impl GlobalAlloc for PreferPsram {
 #[global_allocator]
 static ALLOCATOR: PreferPsram = PreferPsram;
 
-/// Whether to run the board's own hotspot: the BOOT button held for
-/// HOTSPOT_HOLD within HOTSPOT_WINDOW of start-up (or a hold that began in
-/// the window). The screen asks meanwhile.
-fn hotspot_asked(status: &status::SharedStatus) -> bool {
+/// What BOOT, held just after start-up, asks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Boot {
+    /// Not held: join Wi-Fi.
+    Normal,
+    /// The board's own hotspot.
+    Hotspot,
+    /// The game's files (the card, or the flash) as a USB drive on a PC.
+    Drive,
+}
+
+/// What the USB drive shows a PC.
+enum DriveStorage {
+    /// The SD card, through its driver (kept in main).
+    Card(*const esp_idf_svc::sys::sdmmc_card_t),
+    /// The board's flash, through its wear-levelling handle (unmounted
+    /// from the server's side first).
+    Flash(esp_idf_svc::sys::wl_handle_t),
+}
+
+/// Watch BOOT for BOOT_WINDOW after start-up (and for as long as a hold
+/// that began then goes on). Held for HOTSPOT_HOLD, then let go, the board
+/// runs its own hotspot; held on to DRIVE_HOLD, it becomes a USB drive
+/// instead. The screen shows the hold as a bar: blue, then orange.
+fn boot_choice(status: &status::SharedStatus) -> Boot {
     use esp_idf_svc::sys::*;
     use std::time::{Duration, Instant};
     unsafe {
         gpio_set_direction(PIN_BOOT as _, gpio_mode_t_GPIO_MODE_INPUT);
         gpio_set_pull_mode(PIN_BOOT as _, gpio_pull_mode_t_GPIO_PULLUP_ONLY);
     }
+    const HINTS: [&str; 2] = ["Hold BOOT now for a hotspot", "Hold it 3s for a USB drive"];
     {
         let mut st = status::lock(status);
-        st.event("Hold BOOT now for a hotspot".to_string());
-        st.hotspot_window = true;
+        for hint in HINTS {
+            st.event(hint.to_string());
+        }
+        st.boot_window = true;
     }
+    // Once the choice is made, the hints go from the screen's messages.
+    let done = |boot: Boot| {
+        status::lock(status).events.retain(|e| !HINTS.contains(&e.as_str()));
+        boot
+    };
     info!("Hold BOOT for {}s now to run a hotspot", HOTSPOT_HOLD.as_secs());
-    let show = |hold: Option<f32>| status::lock(status).hotspot_hold = hold;
+    let show = |hold: Option<f32>| status::lock(status).boot_hold = hold;
+    // How far along the bar a hold of this long is (see Status::boot_hold).
+    let bar = |held: Duration| {
+        if held < HOTSPOT_HOLD {
+            held.as_secs_f32() / HOTSPOT_HOLD.as_secs_f32()
+        } else {
+            1.0 + (held - HOTSPOT_HOLD).as_secs_f32() / (DRIVE_HOLD - HOTSPOT_HOLD).as_secs_f32()
+        }
+    };
     let start = Instant::now();
     let mut held_since: Option<Instant> = None;
-    while start.elapsed() < HOTSPOT_WINDOW || held_since.is_some() {
+    while start.elapsed() < BOOT_WINDOW || held_since.is_some() {
         let down = unsafe { gpio_get_level(PIN_BOOT as _) } == 0;
         match (down, held_since) {
             (true, None) => held_since = Some(Instant::now()),
-            (false, Some(_)) => {
+            (false, Some(t)) => {
                 held_since = None;
+                if t.elapsed() >= HOTSPOT_HOLD {
+                    // Let go between the two: the hotspot. The bar stays
+                    // full blue until it is up (start_hotspot).
+                    show(Some(1.0));
+                    return done(Boot::Hotspot);
+                }
                 show(None);
             }
             _ => {}
         }
         if let Some(t) = held_since {
-            let done = t.elapsed().as_secs_f32() / HOTSPOT_HOLD.as_secs_f32();
-            show(Some(done.min(1.0)));
-            if done >= 1.0 {
-                // The bar stays full until the hotspot is up (start_hotspot).
-                return true;
+            let held = t.elapsed();
+            if held >= DRIVE_HOLD {
+                show(Some(2.0));
+                return done(Boot::Drive);
             }
+            show(Some(bar(held)));
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let mut st = status::lock(status);
-    st.hotspot_window = false;
-    st.hotspot_hold = None;
-    false
+    {
+        let mut st = status::lock(status);
+        st.boot_window = false;
+        st.boot_hold = None;
+    }
+    done(Boot::Normal)
+}
+
+/// Show the game's files to a PC as a USB drive (ESP-IDF's TinyUSB mass
+/// storage), instead of running the server: the whole SD card, or the
+/// flash partition through its wear levelling. Only one side can write a
+/// FAT file system at a time, so the server's own use of them has stopped
+/// (the card is unmounted by the caller, the flash here). Copy or edit the
+/// files, and eject the drive: the board restarts into the game. BOOT
+/// does nothing meanwhile (unplugging, once ejected, also works). The
+/// board's USB carries the drive instead of the serial log meanwhile.
+fn usb_drive(storage: DriveStorage, status: &status::SharedStatus) -> ! {
+    use esp_idf_svc::sys;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+    // Set when the PC ejects the drive: esp_tinyusb then mounts it on the
+    // board's side again, and says so.
+    static EJECTED: AtomicBool = AtomicBool::new(false);
+    unsafe extern "C" fn mount_changed(_: *mut sys::tinyusb_msc_event_t) {
+        EJECTED.store(true, Ordering::Relaxed);
+    }
+    let what = match storage {
+        DriveStorage::Card(_) => "SD card",
+        DriveStorage::Flash(_) => "Flash",
+    };
+    // What the screen shows: the files at the top, and the size.
+    let mut files: Vec<String> = Vec::new();
+    let mut bytes = 0u64;
+    let started = (|| -> anyhow::Result<()> {
+        // Mounted on the board's side when esp_tinyusb takes it (where
+        // it mounts it again after an eject), then handed to the PC.
+        let mut mount_config: sys::esp_vfs_fat_mount_config_t = unsafe { std::mem::zeroed() };
+        mount_config.max_files = 4;
+        match storage {
+            DriveStorage::Card(card) => {
+                let mut config: sys::tinyusb_msc_sdmmc_config_t = unsafe { std::mem::zeroed() };
+                config.card = card as *mut _;
+                config.mount_config.max_files = mount_config.max_files;
+                sys::esp!(unsafe { sys::tinyusb_msc_storage_init_sdmmc(&config) })?;
+            }
+            DriveStorage::Flash(flash) => {
+                let base = std::ffi::CString::new(MOUNT)?;
+                sys::esp!(unsafe { sys::esp_vfs_fat_spiflash_unmount_rw_wl(base.as_ptr(), flash) })?;
+                let label = std::ffi::CString::new(FLASH_PARTITION)?;
+                let partition = unsafe {
+                    sys::esp_partition_find_first(
+                        sys::esp_partition_type_t_ESP_PARTITION_TYPE_DATA,
+                        sys::esp_partition_subtype_t_ESP_PARTITION_SUBTYPE_DATA_FAT,
+                        label.as_ptr(),
+                    )
+                };
+                anyhow::ensure!(!partition.is_null(), "no \"{FLASH_PARTITION}\" partition");
+                let mut handle: sys::wl_handle_t = 0;
+                sys::esp!(unsafe { sys::wl_mount(partition, &mut handle) })?;
+                let mut config: sys::tinyusb_msc_spiflash_config_t = unsafe { std::mem::zeroed() };
+                config.wl_handle = handle;
+                config.mount_config.max_files = mount_config.max_files;
+                sys::esp!(unsafe { sys::tinyusb_msc_storage_init_spiflash(&config) })?;
+            }
+        }
+        // Kept for the life of the board: esp_tinyusb keeps the pointer.
+        let base: &'static std::ffi::CStr = Box::leak(std::ffi::CString::new(MOUNT)?.into_boxed_c_str());
+        sys::esp!(unsafe { sys::tinyusb_msc_storage_mount(base.as_ptr()) })?;
+        // While it is still the board's, a look at what is on it.
+        let mut dirs = Vec::new();
+        for entry in fs::read_dir(MOUNT)?.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(format!("{name}/"));
+            } else {
+                files.push(name);
+            }
+        }
+        dirs.sort_by_key(|n| n.to_lowercase());
+        files.sort_by_key(|n| n.to_lowercase());
+        files.splice(0..0, dirs);
+        bytes = unsafe { sys::tinyusb_msc_storage_get_sector_count() as u64 * sys::tinyusb_msc_storage_get_sector_size() as u64 };
+        sys::esp!(unsafe { sys::tinyusb_msc_storage_unmount() })?;
+        sys::esp!(unsafe {
+            sys::tinyusb_msc_register_callback(
+                sys::tinyusb_msc_event_type_t_TINYUSB_MSC_EVENT_MOUNT_CHANGED,
+                Some(mount_changed),
+            )
+        })?;
+        // All zero: the built-in PHY, and the default descriptors (from
+        // sdkconfig.defaults).
+        let usb: sys::tinyusb_config_t = unsafe { std::mem::zeroed() };
+        sys::esp!(unsafe { sys::tinyusb_driver_install(&usb) })?;
+        Ok(())
+    })();
+    // The screen's USB drive page.
+    let error = match started {
+        Ok(()) => {
+            info!("The game's files ({what}) are a USB drive now: eject it to go back to the game");
+            None
+        }
+        Err(e) => {
+            log::warn!("USB drive: {e}");
+            Some(e.to_string())
+        }
+    };
+    {
+        let mut st = status::lock(status);
+        st.boot_hold = None;
+        st.usb_drive = Some(status::UsbDrive { what, bytes, files, error, ejected: false });
+    }
+    // Ejected on the PC: restart into the game. BOOT does nothing while
+    // the PC has the drive (restarting under it could damage the files);
+    // only if the drive couldn't start does a press restart the board.
+    let failed = status::lock(status).usb_drive.as_ref().is_some_and(|d| d.error.is_some());
+    let down = || unsafe { sys::gpio_get_level(PIN_BOOT as _) } == 0;
+    let mut was_down = true;
+    loop {
+        if EJECTED.load(Ordering::Relaxed) {
+            info!("Ejected: restarting into the game");
+            if let Some(drive) = status::lock(status).usb_drive.as_mut() {
+                drive.ejected = true;
+            }
+            // Time for the PC to hear that the eject went through, and for
+            // the screen to say so (it is redrawn every second).
+            std::thread::sleep(Duration::from_millis(1500));
+            break;
+        }
+        let now_down = down();
+        if failed && now_down && !was_down {
+            info!("BOOT pressed: restarting");
+            break;
+        }
+        was_down = now_down;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Give the USB pins back to the serial port (USB-Serial-JTAG) before
+    // restarting. TinyUSB switched them to the USB controller with a bit
+    // in the RTC domain, which a restart doesn't reset, so otherwise the
+    // serial port (the log, and flashing without holding BOOT) wouldn't
+    // come back until the power is cut.
+    if !failed {
+        if let Err(e) = sys::esp!(unsafe { sys::tinyusb_driver_uninstall() }) {
+            log::warn!("USB drive: stopping TinyUSB: {e}");
+        }
+    }
+    give_usb_to_serial();
+    // The PC sees the drive go, and the serial port arrive after the restart.
+    std::thread::sleep(Duration::from_millis(100));
+    unsafe { sys::esp_restart() }
+}
+
+/// Hand the chip's USB pins back to the USB-Serial-JTAG controller: clear
+/// RTC_CNTL_USB_CONF_REG's SW_HW_USB_PHY_SEL (bit 20: software chooses)
+/// and SW_USB_PHY_SEL (bit 19: the USB controller has them), as in
+/// ESP-IDF's usb_serial_jtag_ll.h and usb_wrap_ll.h for the ESP32-S3.
+fn give_usb_to_serial() {
+    const RTC_CNTL_USB_CONF_REG: *mut u32 = (0x6000_8000 + 0x120) as *mut u32;
+    const SW_HW_USB_PHY_SEL: u32 = 1 << 20;
+    const SW_USB_PHY_SEL: u32 = 1 << 19;
+    unsafe {
+        let v = RTC_CNTL_USB_CONF_REG.read_volatile();
+        RTC_CNTL_USB_CONF_REG.write_volatile(v & !(SW_HW_USB_PHY_SEL | SW_USB_PHY_SEL));
+    }
 }
 
 /// Run the board's own hotspot, `net`, at HOTSPOT_IP, handing out
@@ -416,8 +640,8 @@ fn start_hotspot(
         ip: ip.to_string(),
         qr,
     }));
-    st.hotspot_window = false;
-    st.hotspot_hold = None;
+    st.boot_window = false;
+    st.boot_hold = None;
     Ok(wifi)
 }
 
@@ -549,7 +773,7 @@ const FLASH_PARTITION: &str = "storage";
 /// Mount the board's own flash at MOUNT: a FAT file system, formatted the
 /// first time, over ESP-IDF's wear levelling, which spreads the writes
 /// across the partition so no part of the flash wears out first.
-fn mount_flash() -> anyhow::Result<()> {
+fn mount_flash() -> anyhow::Result<esp_idf_svc::sys::wl_handle_t> {
     use esp_idf_svc::sys;
     let base = std::ffi::CString::new(MOUNT)?;
     let label = std::ffi::CString::new(FLASH_PARTITION)?;
@@ -560,7 +784,7 @@ fn mount_flash() -> anyhow::Result<()> {
         disk_status_check_enable: false,
         use_one_fat: false,
     };
-    // The handle is only needed to unmount, which never happens.
+    // The handle is only needed to unmount, for the USB drive.
     let mut handle: sys::wl_handle_t = 0;
     let result = unsafe { sys::esp_vfs_fat_spiflash_mount_rw_wl(base.as_ptr(), label.as_ptr(), &config, &mut handle) };
     if result == sys::ESP_ERR_NOT_FOUND as sys::esp_err_t {
@@ -571,7 +795,7 @@ fn mount_flash() -> anyhow::Result<()> {
     }
     sys::esp!(result)?;
     info!("Board's flash mounted at {MOUNT}");
-    Ok(())
+    Ok(handle)
 }
 
 /// Game data on the SD card that a reset deletes. Extra media (skins and

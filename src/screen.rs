@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::font::{Font, BIG, SMALL};
-use crate::status::{Hotspot, Status};
+use crate::status::{Hotspot, Status, UsbDrive};
 
 /// Landscape: the panel is 172x320, used sideways.
 pub const WIDTH: usize = 320;
@@ -26,6 +26,8 @@ const BAD_RGB: [u8; 3] = [239, 83, 80];
 const GOOD: u16 = rgb(GOOD_RGB[0], GOOD_RGB[1], GOOD_RGB[2]);
 const EVENT: u16 = rgb(EVENT_RGB[0], EVENT_RGB[1], EVENT_RGB[2]);
 const BAD: u16 = rgb(BAD_RGB[0], BAD_RGB[1], BAD_RGB[2]);
+/// The USB drive page's header: the orange of the BOOT hold bar.
+const DRIVE_HEADER: u16 = rgb(251, 140, 0);
 
 /// The chip's temperature bands: the ESP32-S3 is rated for 85 C around
 /// it; ordinary SD cards for about 70 C, and the card sits right over the
@@ -226,6 +228,11 @@ pub struct View<'a> {
 
 /// Draw the whole screen.
 pub fn render(f: &mut Frame, view: &View) {
+    // As a USB drive, its own page, and no other.
+    if let Some(drive) = &view.status.usb_drive {
+        render_drive(f, drive);
+        return;
+    }
     match (view.page, &view.status.hotspot) {
         (Page::Join, Some(hotspot)) => render_join(f, view.status, hotspot),
         (Page::Overview | Page::Join, _) => render_overview(f, view.status, view.system),
@@ -241,16 +248,21 @@ pub fn render(f: &mut Frame, view: &View) {
         let colour = if p == view.page { TEXT } else { RULE };
         f.fill(x0 + i * (dot + gap), HEIGHT - dot - 3, dot, dot, colour);
     }
-    // BOOT held for a hotspot: a blue bar growing along the bottom edge.
-    if let Some(done) = view.status.hotspot_hold {
-        let w = (done.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
-        f.fill(0, HEIGHT - HOLD_BAR, w, HOLD_BAR, HOLD_BLUE);
+    // BOOT held at start-up: a blue bar growing along the bottom edge
+    // towards a hotspot, then an orange one over it towards the USB drive.
+    if let Some(held) = view.status.boot_hold {
+        let width = |part: f32| (part.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
+        f.fill(0, HEIGHT - HOLD_BAR, width(held), HOLD_BAR, HOLD_BLUE);
+        if held > 1.0 {
+            f.fill(0, HEIGHT - HOLD_BAR, width(held - 1.0), HOLD_BAR, HOLD_ORANGE);
+        }
     }
 }
 
-/// The hotspot hold bar's height and colour.
+/// The BOOT hold bar's height and colours.
 const HOLD_BAR: usize = 8;
 const HOLD_BLUE: u16 = rgb(30, 136, 229);
+const HOLD_ORANGE: u16 = rgb(251, 140, 0);
 
 /// A bar `w` pixels wide, filled to `percent`, coloured by how full it is.
 fn bar(f: &mut Frame, at: (usize, usize), w: usize, percent: f32) {
@@ -455,6 +467,68 @@ fn render_chat(f: &mut Frame, st: &Status) {
 fn chunks(text: &str, width: usize) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     chars.chunks(width.max(1)).map(|c| c.iter().collect()).collect()
+}
+
+/// The USB drive's page: an orange header, what the PC sees, the files at
+/// the top of it (as when it started), and how to get back to the game.
+fn render_drive(f: &mut Frame, d: &UsbDrive) {
+    let margin = 6;
+    let right = WIDTH - margin;
+    f.fill(0, 0, WIDTH, HEIGHT, BACKGROUND);
+    let header_h = BIG.h + 4;
+    let (title, header) = if d.error.is_some() { ("USB Drive Failed", BAD) } else { ("USB Drive Active", DRIVE_HEADER) };
+    f.fill(0, 0, WIDTH, header_h, header);
+    f.text(&Pen::new(&BIG, BACKGROUND, header, WIDTH), margin, 2, title);
+
+    let line = SMALL.h + 1;
+    let mut y = header_h + 4;
+    let footer_y = HEIGHT - line - 2;
+    let text = Pen::new(&SMALL, TEXT, BACKGROUND, right);
+    if let Some(e) = &d.error {
+        for part in chunks(e, (right - margin) / SMALL.w).iter().take((footer_y - y) / line) {
+            f.text(&text, margin, y, part);
+            y += line;
+        }
+        f.text(&Pen::new(&SMALL, EVENT, BACKGROUND, right), margin, footer_y, "Press BOOT to restart");
+        return;
+    }
+    f.pair(&(margin, y), &format!("{} ", d.what), &size(d.bytes));
+    y += line + 3;
+    f.fill(margin, y - 2, right - margin, 1, RULE);
+
+    // The files, in two columns; "+N more" in the last place if they don't
+    // all fit.
+    let rows = (footer_y - y) / line;
+    let col_w = (right - margin) / 2;
+    let places = rows * 2;
+    let shown = if d.files.len() > places { places - 1 } else { d.files.len() };
+    let mut items: Vec<String> = d.files[..shown].to_vec();
+    if shown < d.files.len() {
+        items.push(format!("+{} more", d.files.len() - shown));
+    }
+    if d.files.is_empty() {
+        items.push("(empty)".to_string());
+    }
+    for (i, name) in items.iter().enumerate() {
+        let (col, row) = (i / rows, i % rows);
+        let x = margin + col * col_w;
+        let colour = if name.ends_with('/') { GOOD } else { TEXT };
+        f.text(&Pen::new(&SMALL, colour, BACKGROUND, x + col_w - SMALL.w), x, y + row * line, name);
+    }
+
+    let (note, colour) = if d.ejected { ("Ejected: restarting...", GOOD) } else { ("Eject it on the PC to play again", EVENT) };
+    f.text(&Pen::new(&SMALL, colour, BACKGROUND, right), margin, footer_y, note);
+}
+
+/// A size in bytes, for people.
+fn size(bytes: u64) -> String {
+    const MB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= 1024.0 * MB {
+        format!("{:.1} GB", b / (1024.0 * MB))
+    } else {
+        format!("{:.1} MB", b / MB)
+    }
 }
 
 /// The hotspot page: a QR code that a phone camera offers to join, and the

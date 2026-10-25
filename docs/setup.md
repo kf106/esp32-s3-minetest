@@ -23,15 +23,26 @@ All of these are plain text or simple binary files, so you can inspect or edit t
 ### Without an SD card
 
 If no card is found at start-up, the server keeps everything in the board's own flash instead: an 11 MB partition (`storage` in `partitions.csv`), formatted as FAT the first time and mounted in the card's place, with ESP-IDF's wear levelling spreading the writes. The same files are kept there, and the Device page shows "Flash" in place of "SD card". Things to know:
-- **Getting files in and out:** there is no card to put in a PC, so no editing `wifi.txt` or `motd.txt`, adding skins, or looking at the files there. Build with `WIFI_SSID` and `WIFI_PASS` (or use the hotspot) for the Wi-Fi settings; changing networks means reflashing.
-- **Backups and moving a world:** a card can be copied in seconds; a world in flash belongs to that board, and there is no tool yet to copy it out.
+- **Getting files in and out:** there is no card to put in a PC, but the board can become a USB drive instead (see [As a USB drive](#as-a-usb-drive)). That is how to edit `wifi.txt` or `motd.txt`, add skins, back the world up, or move it to a card or a PC.
 - **The partition table:** `cargo run` writes it with the firmware (see `.cargo/config.toml`). Ordinary reflashing keeps the game, but flashing with a different table (for instance if the firmware ever outgrows its 5 MB), or erasing the whole flash, wipes it.
 - **Space:** 11 MB. A world takes a few megabytes, so it is plenty for play, but leaves little room for extra media.
 - **Wear:** flash lasts about 100,000 erases per sector. Wear levelling spreads the writes over the whole partition, so at the server's rate (changes saved once a second while people play) it should last many years, but unlike a card it can't be replaced.
 - **A card and flash are separate:** a world started in flash stays there, and isn't seen while a card is in. One board holds one world in flash; cards let you swap between worlds.
 - `RESET_SD=1` resets whichever is in use.
 
-For tinkering, backups or more than one world, use a card; flash suits a fixed setup or a demo.
+For tinkering or more than one world, use a card; flash suits a fixed setup or a demo.
+
+### As a USB drive
+
+The board can show its files to a PC as a USB drive: the SD card if there is one, otherwise the flash. That saves taking the card out to add a Wi-Fi network to `wifi.txt`, and it is the only way at the files in flash. Plug it into the PC, and when the screen says "Hold BOOT now for a hotspot", keep BOOT held for three seconds: the blue bar fills (that far means the hotspot), then an orange one fills over it. When the orange bar is full, the server doesn't start, and the files appear on the PC: `world`, `players`, `auth`, `wifi.txt` and the rest. Let go while only the blue bar is full and you get the hotspot instead.
+
+The screen changes to an orange "USB Drive Active" page, with what the PC sees (the card or the flash, and its size) and the files and folders at the top of it. Copy or change what you like, and eject the drive on the PC: the page says "Ejected: restarting...", and the board restarts into the game. BOOT does nothing while it is a drive. (Unplugging also works once the drive is ejected.) If the drive couldn't start, the page turns red and says why; BOOT then restarts the board. Things to know:
+- **Don't change the game's files unless you know what you are doing.** `wifi.txt` and `motd.txt` are meant to be edited. Deleting or editing the rest can lose accounts, inventories or the world's changes, or let someone else become the administrator. Copying them off as a backup is always safe.
+- **Eject, don't just unplug.** The PC may still be writing when it says the copy is done; pulling the plug before ejecting can damage the files.
+- **No server meanwhile.** Only one side can use the files at a time, so nobody can play while it is a drive.
+- **No serial log meanwhile.** The board's USB carries the drive instead of the log. Flashing still works as usual.
+- **A world from a PC:** the PC build keeps the same files in its `--data` folder. Copy them over (in flash, the 11 MB limit applies), and the board plays that world.
+- **Speed:** the board's USB is the slow kind (12 Mbit/s), so expect about 1 MB/s at best: fine for `wifi.txt` or a world, slow for a whole card of extra media.
 
 ## Wi-Fi networks
 
@@ -56,7 +67,7 @@ How the server chooses a network:
 
 ## Its own hotspot
 
-Where there is no Wi-Fi to join, the board can make its own network. Switch it on, and when the screen says "Hold BOOT now for a hotspot", hold the BOOT button for a second (it waits three seconds for this). A blue bar grows along the bottom of the screen while you hold it; when it reaches the end, the hotspot starts and the screen shows its QR code. Let go before then and the bar goes, and the board joins Wi-Fi as usual. Don't hold BOOT while plugging the board in: the chip then waits to be flashed instead of starting.
+Where there is no Wi-Fi to join, the board can make its own network. Switch it on, and when the screen says "Hold BOOT now for a hotspot", hold the BOOT button for a second (it waits three seconds for this). A blue bar grows along the bottom of the screen while you hold it; when it reaches the end, the hotspot starts and the screen shows its QR code. Let go before then and the bar goes, and the board joins Wi-Fi as usual. (Holding on past the blue bar starts an orange one, towards [the USB drive](#as-a-usb-drive): let go once the blue bar is full for the hotspot.) Don't hold BOOT while plugging the board in: the chip then waits to be flashed instead of starting.
 
 The hotspot is set in `wifi.txt` with a `hotspot` line, and the `password` line after it:
 

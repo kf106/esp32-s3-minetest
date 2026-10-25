@@ -1215,14 +1215,32 @@ fn main() {
             f.write_be(0..screen::HEIGHT, &mut out);
             std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();
         }
-        // BOOT half held for a hotspot at start-up: the bar along the bottom.
-        let mut hold = status::lock(&st).clone();
-        hold.hotspot_hold = Some(0.5);
-        let mut f = screen::Frame::new();
-        screen::render(&mut f, &screen::View { page: screen::Page::Overview, status: &hold, system: &sys });
-        let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
-        f.write_be(0..screen::HEIGHT, &mut out);
-        std::fs::write(format!("{OUT}/hold.rgb565"), out).unwrap();
+        // BOOT held at start-up: half way to a hotspot, and past it, half
+        // way to the USB drive. The bar along the bottom.
+        for (held, name) in [(0.5, "hold"), (1.5, "hold2")] {
+            let mut hold = status::lock(&st).clone();
+            hold.boot_hold = Some(held);
+            let mut f = screen::Frame::new();
+            screen::render(&mut f, &screen::View { page: screen::Page::Overview, status: &hold, system: &sys });
+            let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
+            f.write_be(0..screen::HEIGHT, &mut out);
+            std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();
+        }
+        // The USB drive's page: active, ejected, and failed.
+        let files: Vec<String> = ["auth/", "media/", "players/", "world/", "motd.txt", "wifi-written", "wifi.txt"].iter().map(|n| n.to_string()).collect();
+        for (name, drive) in [
+            ("drive", status::UsbDrive { what: "SD card", bytes: 31_914_983_424, files: files.clone(), error: None, ejected: false }),
+            ("drive2", status::UsbDrive { what: "Flash", bytes: 11_468_800, files, error: None, ejected: true }),
+            ("drive3", status::UsbDrive { what: "Flash", bytes: 0, files: Vec::new(), error: Some("ESP_ERR_INVALID_STATE (no \"storage\" partition)".into()), ejected: false }),
+        ] {
+            let mut d = status::lock(&st).clone();
+            d.usb_drive = Some(drive);
+            let mut f = screen::Frame::new();
+            screen::render(&mut f, &screen::View { page: screen::Page::Overview, status: &d, system: &sys });
+            let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
+            f.write_be(0..screen::HEIGHT, &mut out);
+            std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();
+        }
         return;
     }
     if std::env::var("BENCH").is_ok() {

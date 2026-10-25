@@ -14,6 +14,9 @@ build-std = ["std", "panic_abort"]
 MCU = "esp32s3"
 ESP_IDF_VERSION = "v5.5.1"
 ESP_IDF_TOOLS_INSTALL_DIR = "workspace"
+# TinyUSB's headers (for the USB drive) choose their FreeRTOS include path
+# by chip, which its build gives the C compiler but not bindgen.
+BINDGEN_EXTRA_CLANG_ARGS = "-DCFG_TUSB_MCU=OPT_MCU_ESP32S3"
 
 # Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
 # Required for now due to embuild limitations.

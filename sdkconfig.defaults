@@ -45,3 +45,12 @@ CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y
 # Guard words round every heap block, so an overrun is caught at the block
 # it damages (checked by the server's periodic heap check, and on free).
 CONFIG_HEAP_POISONING_LIGHT=y
+
+# The USB drive (holding BOOT for 3 s at start-up):
+# TinyUSB with mass storage. The buffer holds a whole wear-levelling
+# sector, so the PC's writes don't each rewrite a sector.
+CONFIG_TINYUSB_MSC_ENABLED=y
+CONFIG_TINYUSB_MSC_BUFSIZE=4096
+CONFIG_TINYUSB_DESC_MANUFACTURER_STRING="esp32-s3-minetest"
+CONFIG_TINYUSB_DESC_PRODUCT_STRING="Minetest on a stick"
+CONFIG_TINYUSB_DESC_MSC_STRING="Minetest on a stick"

@@ -33,3 +33,11 @@ qrcodegen = "1.8"
 
 [build-dependencies]
 embuild = "0.33.5"
+
+# The USB drive (see usb_drive in src/main.rs): Espressif's TinyUSB
+# component, fetched by ESP-IDF's component manager when building. The 1.x
+# releases, whose mass storage API the code uses. esp-idf-sys's own
+# bindings take in its headers once it is there (see BINDGEN_EXTRA_CLANG_ARGS
+# in .cargo/config.toml).
+[[package.metadata.esp-idf-sys.extra_components]]
+remote_component = { name = "espressif/esp_tinyusb", version = "~1.7.0" }

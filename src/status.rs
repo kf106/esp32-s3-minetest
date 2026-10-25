@@ -80,14 +80,36 @@ pub struct Status {
     pub chat: VecDeque<ChatLine>,
     /// Set when the board runs its own hotspot rather than joining Wi-Fi.
     pub hotspot: Option<Arc<Hotspot>>,
-    /// While BOOT is watched at start-up for a hotspot: the button doesn't
-    /// page through the screens then.
+    /// While BOOT is watched at start-up (for a hotspot or the USB drive),
+    /// and while the board is a USB drive: the button doesn't page through
+    /// the screens then, and the screen stays on.
     #[cfg_attr(not(target_os = "espidf"), allow(dead_code))]
-    pub hotspot_window: bool,
-    /// How far through the hold that asks for a hotspot BOOT is, 0 to 1,
-    /// while it is held (shown as a bar along the bottom of the screen);
-    /// 1 from when the hold is long enough until the hotspot is up.
-    pub hotspot_hold: Option<f32>,
+    pub boot_window: bool,
+    /// How long BOOT has been held at start-up, shown as a bar along the
+    /// bottom of the screen: 0 to 1 towards a hotspot (blue), then 1 to 2
+    /// towards the USB drive (orange). It stays at 1 from when the hotspot
+    /// is chosen until it is up.
+    pub boot_hold: Option<f32>,
+    /// Set while the board is a USB drive (or failed to become one): the
+    /// screen shows its own page then.
+    pub usb_drive: Option<UsbDrive>,
+}
+
+/// The USB drive, for its screen.
+#[derive(Clone)]
+#[cfg_attr(not(target_os = "espidf"), allow(dead_code))]
+pub struct UsbDrive {
+    /// What the PC sees: "SD card" or "Flash".
+    pub what: &'static str,
+    /// Its size in bytes.
+    pub bytes: u64,
+    /// The files and folders at the top, as they were when it started
+    /// (folders end in "/", and come first).
+    pub files: Vec<String>,
+    /// Why it couldn't start.
+    pub error: Option<String>,
+    /// Ejected on the PC: the board is restarting.
+    pub ejected: bool,
 }
 
 /// Problems (such as failing to save to the SD card), counted from
@@ -140,8 +162,9 @@ impl Status {
             chats: 0,
             chat: VecDeque::new(),
             hotspot: None,
-            hotspot_window: false,
-            hotspot_hold: None,
+            boot_window: false,
+            boot_hold: None,
+            usb_drive: None,
         }))
     }
 
