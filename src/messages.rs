@@ -1587,7 +1587,7 @@ pub fn formspec_escape(s: &str) -> String {
 /// on the right a turnable preview of the player's character with buttons
 /// to change skin. The listrings make shift-click move items between the
 /// main list and the craft grid.
-pub fn build_inventory_formspec(skin: &SkinChoice) -> Vec<u8> {
+pub fn build_inventory_formspec(skin: &SkinChoice, creative: bool) -> Vec<u8> {
     let fs = format!(
         "formspec_version[6]size[14.5,10.25]{tabs}\
          list[current_player;craft;2.375,0.5;3,3;]\
@@ -1600,7 +1600,7 @@ pub fn build_inventory_formspec(skin: &SkinChoice) -> Vec<u8> {
          label[10.85,4.25;{label}]\
          button[10.85,4.6;1.4,0.75;{FIELD_SKIN_PREVIOUS};<]\
          button[12.65,4.6;1.4,0.75;{FIELD_SKIN_NEXT};>]",
-        tabs = inventory_tabs(1),
+        tabs = inventory_tabs(1, creative),
         texture = formspec_escape(skin.texture),
         label = formspec_escape(skin.label),
     );
@@ -1610,14 +1610,25 @@ pub fn build_inventory_formspec(skin: &SkinChoice) -> Vec<u8> {
 }
 
 /// sfinv's tabs along the top of the inventory window: Crafting (1) and
-/// the crafting guide's Recipes (2).
-fn inventory_tabs(current: u8) -> String {
-    format!("tabheader[0,0;{};Crafting,Recipes;{current};true;false]", crate::craftguide::TABS)
+/// the crafting guide's Recipes (2); in creative mode, the creative
+/// inventory's All, Nodes, Tools and Items (3 to 6).
+fn inventory_tabs(current: u8, creative: bool) -> String {
+    let creative_tabs = if creative { ",All,Nodes,Tools,Items" } else { "" };
+    format!("tabheader[0,0;{};Crafting,Recipes{creative_tabs};{current};true;false]", crate::craftguide::TABS)
+}
+
+/// The inventory window on a creative inventory tab (creative.rs).
+pub fn build_creative_formspec(view: &crate::creative::View, player: &str) -> Vec<u8> {
+    let current = view.tab.map_or(3, |t| 3 + crate::creative::Tab::EVERY.iter().position(|&x| x == t).unwrap_or(0) as u8);
+    let fs = format!("formspec_version[6]size[14.5,10.75]{}{}", inventory_tabs(current, true), view.formspec(player));
+    let mut w = Writer::new(TOCLIENT_INVENTORY_FORMSPEC);
+    w.bytes32(fs.as_bytes());
+    w.into_inner()
 }
 
 /// The inventory window on its Recipes tab (the crafting guide).
-pub fn build_recipes_formspec(guide: &crate::craftguide::Guide) -> Vec<u8> {
-    let fs = format!("formspec_version[6]size[14.5,10.25]{}{}", inventory_tabs(2), crate::craftguide::formspec(guide));
+pub fn build_recipes_formspec(guide: &crate::craftguide::Guide, creative: bool) -> Vec<u8> {
+    let fs = format!("formspec_version[6]size[14.5,10.25]{}{}", inventory_tabs(2, creative), crate::craftguide::formspec(guide));
     let mut w = Writer::new(TOCLIENT_INVENTORY_FORMSPEC);
     w.bytes32(fs.as_bytes());
     w.into_inner()

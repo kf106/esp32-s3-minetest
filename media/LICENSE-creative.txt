@@ -1,0 +1,19 @@
+Creative: the icons from Minetest Game's creative mod
+(https://github.com/luanti-org/minetest_game, mods/creative), unchanged,
+under their original names:
+
+  creative_prev_icon.png, creative_next_icon.png, creative_search_icon.png,
+  creative_clear_icon.png, creative_trash_icon.png
+
+Credits, from that mod's README.md and license.txt:
+
+paramat (CC BY-SA 3.0):
+  creative_prev_icon.png, creative_next_icon.png, creative_search_icon.png,
+  creative_clear_icon.png,
+  creative_trash_icon.png (derived from a texture by kilbith, CC BY-SA 3.0)
+
+Copyright (C) 2016 Jean-Patrick G. (kilbith) <jeanpatrick.guerrero@gmail.com>
+Copyright (C) 2018 paramat
+
+Licensed under Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0):
+https://creativecommons.org/licenses/by-sa/3.0/

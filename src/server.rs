@@ -11,6 +11,7 @@ use log::{debug, info, warn};
 
 use crate::boats;
 use crate::carts;
+use crate::creative;
 use crate::auth::{self, Account, AuthStore, NameError};
 use crate::content::{self, Media};
 use crate::messages::{self, *};
@@ -352,7 +353,7 @@ struct Peer {
     /// The zoom their properties last gave them, and whether they were
     /// last allowed the minimap (binoculars.rs).
     zoom_fov: f32,
-    minimap: Option<bool>,
+    minimap: Option<(bool, bool)>,
     /// The fire's crackle playing to this player, if any.
     fire_sound: Option<i32>,
     /// The inventory window's Recipes tab: what it shows.
@@ -361,6 +362,10 @@ struct Peer {
     in_bed: Option<InBed>,
     /// The boat they sit in, or the cart they stand in, if any.
     riding: Option<u16>,
+    /// In creative mode (the server's, or their creative privilege), and
+    /// their view of the creative inventory.
+    creative: bool,
+    creative_view: creative::View,
     /// Their view turning with the cart they ride round a corner: the
     /// way they looked when it began, how far it turns (degrees,
     /// anticlockwise), and how far it has turned so far. Each step is sent
@@ -395,6 +400,24 @@ impl Peer {
             Posture::Sit
         } else {
             Posture::Stand
+        }
+    }
+
+    /// Use up one of the items in a hotbar slot, placing it: none in
+    /// creative mode (its on_placenode: unlimited node placement).
+    fn use_one(&mut self, slot: usize) {
+        if !self.creative {
+            self.inventory.take_one(slot);
+        }
+    }
+
+    /// The privileges their client is told of: in creative mode they may
+    /// fly and noclip too.
+    fn shown_privs(&self) -> Privs {
+        if self.creative {
+            self.privs.with(Privs::of("fly").unwrap()).with(Privs::of("noclip").unwrap())
+        } else {
+            self.privs
         }
     }
 
@@ -448,6 +471,8 @@ impl Peer {
             guide: craftguide::Guide::default(),
             in_bed: None,
             riding: None,
+            creative: false,
+            creative_view: creative::View::default(),
             cart_turn: None,
             quiet_reported: false,
             unacked_reported: false,
@@ -1835,8 +1860,14 @@ impl Server {
             let items: u32 = peer.inventory.main.iter().flatten().map(|s| s.count as u32).sum();
             info!("{} has {items} items", peer.display_name());
         }
-        let privs = self.peers.get(&from).map_or(Privs::NONE, |p| p.privs);
-        self.send_command(from, 0, &build_privileges(&privs.names()));
+        if let Some(peer) = self.peers.get_mut(&from) {
+            peer.creative = self.settings.creative() || peer.privs.has("creative");
+            if peer.creative {
+                // The creative inventory is the window's first page.
+                peer.creative_view.open(creative::Tab::All);
+            }
+        }
+        self.send_privileges(from);
         // Frame ranges for the client's own model (third-person view)
         self.send_command(from, 0, &build_local_player_animations(true));
         self.send_command(from, 0, &build_move_player(spawn_bs, pitch, yaw));
@@ -1849,7 +1880,13 @@ impl Server {
         // sounds around (env_sounds').
         self.set_weather(from);
         self.play_env_sounds(from);
-        self.send_command(from, 0, &build_health_bar(hp));
+        let creative = self.peers.get(&from).is_some_and(|p| p.creative);
+        if !creative {
+            self.send_command(from, 0, &build_health_bar(hp));
+        } else {
+            self.send_creative_lists(from);
+            self.send_to_players(&build_object_messages(&[(self.peers.get(&from).map_or(0, |p| p.id), immortal_message())]));
+        }
         self.send_command(from, 0, &build_hp(hp, false));
         self.send_command(from, 0, &build_breath(PLAYER_MAX_BREATH));
         if hp == 0 {
@@ -2182,9 +2219,12 @@ impl Server {
             self.resend_node(from, target);
             return;
         }
+        // The creative hand reaches further (its range of 10).
+        let creative = self.peers.get(&from).is_some_and(|p| p.creative);
+        let reach = if creative { creative::HAND_RANGE + 2.0 } else { MAX_INTERACT_DISTANCE };
         let in_reach = |p: [i16; 3]| {
             let d: f32 = (0..3).map(|i| (p[i] as f32 - body[i]).powi(2)).sum();
-            d.sqrt() <= MAX_INTERACT_DISTANCE
+            d.sqrt() <= reach
         };
         let node_pos = |p: [i16; 3]| (p[0] as i32, p[1] as i32, p[2] as i32);
 
@@ -2200,10 +2240,15 @@ impl Server {
                 // (as Luanti's server checks the client's dig).
                 let slot = msg.item as usize;
                 let wielded = self.peers.get(&from).and_then(|p| p.inventory.get(slot)).filter(|_| slot < HOTBAR_SIZE);
-                let caps = content::caps_of(wielded.map(|s| s.id));
+                // In creative mode the hand is the creative hand.
+                let hand = if creative { &creative::HAND_CAPS } else { &content::HAND };
+                let caps = match wielded.map(|s| s.id).filter(|&id| content::is_tool(id)) {
+                    Some(id) => content::caps_of(Some(id)),
+                    None => hand,
+                };
                 let wear = content::dig_params(current, caps, wielded.map_or(0, |s| s.wear))
                     .map(|(_, wear)| wear)
-                    .or_else(|| content::dig_params(current, &content::HAND, 0).map(|_| 0));
+                    .or_else(|| content::dig_params(current, hand, 0).map(|_| 0));
                 let Some(wear) = wear else {
                     info!("{name}: {} can't be dug with that", content::name_of(current));
                     self.resend_node(from, under);
@@ -2278,9 +2323,9 @@ impl Server {
                 info!("{name} dug {} at {under:?}", content::name_of(current));
                 // Others see bits of it fly (builtin's handle_node_drops).
                 self.node_bits(node_pos(under), current, 0, Some(from));
-                // Wear out the tool (builtin's node_dig); a worn-out tool
-                // breaks with its sound.
-                if let Some(mut tool) = wielded.filter(|_| wear > 0) {
+                // Wear out the tool (builtin's node_dig; not in creative
+                // mode); a worn-out tool breaks with its sound.
+                if let Some(mut tool) = wielded.filter(|_| wear > 0 && !creative) {
                     let intact = tool.add_wear(wear);
                     if let Some(peer) = self.peers.get_mut(&from) {
                         peer.inventory.set(slot, intact.then_some(tool));
@@ -2363,6 +2408,18 @@ impl Server {
                     self.fields.remove(&node_pos(under));
                 }
                 for (item, count) in drops {
+                    // In creative mode, only what they haven't got already,
+                    // and nothing dropped if there is no room (the creative
+                    // mod's handle_node_drops).
+                    if creative {
+                        if let Some(peer) = self.peers.get_mut(&from) {
+                            if !peer.inventory.main.iter().flatten().any(|s| s.id == item) {
+                                peer.inventory.add(Stack::new(item, count));
+                            }
+                        }
+                        self.inventory_changed(from);
+                        continue;
+                    }
                     let left = match self.peers.get_mut(&from) {
                         Some(peer) => peer.inventory.add(Stack::new(item, count)),
                         None => count,
@@ -2476,7 +2533,7 @@ impl Server {
                         let name = self.peers.get(&from).map(|p| p.display_name().to_string()).unwrap_or_default();
                         info!("{name} placed a waterlily at {above:?}");
                         if let Some(peer) = self.peers.get_mut(&from) {
-                            peer.inventory.take_one(slot);
+                            peer.use_one(slot);
                         }
                         self.inventory_changed(from);
                         self.world.set_node(node_pos(above), colours::WATERLILY, param2);
@@ -2540,7 +2597,7 @@ impl Server {
                     info!("{name} made a double slab of {} at {under:?}", content::name_of(id));
                     self.edit_event(&name, "placed", block);
                     if let Some(peer) = self.peers.get_mut(&from) {
-                        peer.inventory.take_one(slot);
+                        peer.use_one(slot);
                     }
                     self.inventory_changed(from);
                     self.world.set_node(node_pos(under), block, 0);
@@ -2623,7 +2680,7 @@ impl Server {
                 info!("{name} placed {} at {above:?}", content::name_of(id));
                 self.edit_event(&name, "placed", id);
                 if let Some(peer) = self.peers.get_mut(&from) {
-                    peer.inventory.take_one(slot);
+                    peer.use_one(slot);
                 }
                 self.inventory_changed(from);
                 self.world.set_node(node_pos(above), node, param2);
@@ -2737,7 +2794,7 @@ impl Server {
         info!("{name} placed {} at {pos:?}", content::name_of(door.item));
         self.edit_event(&name, "placed", door.item);
         if let Some(peer) = self.peers.get_mut(&from) {
-            peer.inventory.take_one(at.slot);
+            peer.use_one(at.slot);
         }
         self.inventory_changed(from);
         self.world.set_node(node_pos(pos), node, param2);
@@ -2773,7 +2830,7 @@ impl Server {
         info!("{name} placed {} at {pos:?}", content::name_of(bed));
         self.edit_event(&name, "placed", bed);
         if let Some(peer) = self.peers.get_mut(&from) {
-            peer.inventory.take_one(at.slot);
+            peer.use_one(at.slot);
         }
         self.inventory_changed(from);
         self.world.set_node(node_pos(pos), kind.bottom, dir);
@@ -3101,7 +3158,7 @@ impl Server {
         let mut removed = Vec::new();
         let mut hurt = Vec::new();
         for (addr, p) in self.peers.iter_mut() {
-            if !p.ready || p.hp == 0 {
+            if !p.ready || p.hp == 0 || p.creative {
                 continue;
             }
             // The eyes: player_api's eye height, lower lying in bed.
@@ -4221,7 +4278,7 @@ impl Server {
         info!("{name} placed {} at {under:?}", content::name_of(id));
         self.edit_event(&name, "placed", id);
         if let Some(peer) = self.peers.get_mut(&from) {
-            peer.inventory.take_one(slot);
+            peer.use_one(slot);
         }
         self.inventory_changed(from);
         self.world.set_node(pos, id, param2);
@@ -4442,19 +4499,22 @@ impl Server {
         let Some(peer) = self.peers.get_mut(&addr).filter(|p| p.ready) else {
             return;
         };
-        let allowed = binoculars::minimap(&peer.inventory.main);
-        if peer.minimap == Some(allowed) {
+        // In creative mode, the minimap and its radar without a mapping
+        // kit (map.update_hud_flags).
+        let allowed = peer.creative || binoculars::minimap(&peer.inventory.main);
+        let radar = peer.creative;
+        if peer.minimap == Some((allowed, radar)) {
             return;
         }
-        let had = peer.minimap == Some(true);
-        peer.minimap = Some(allowed);
-        let (flags, mask) = binoculars::minimap_flags(allowed);
+        let had = peer.minimap.is_some_and(|(a, _)| a);
+        peer.minimap = Some((allowed, radar));
+        let (flags, mask) = binoculars::minimap_flags(allowed, radar);
         self.send_command(addr, 0, &build_hud_set_flags(flags, mask));
         // builtin's minimap HUD element, added and removed with the flag
         // (the client shows the minimap only through it).
-        if allowed {
+        if allowed && !had {
             self.send_command(addr, 0, &build_minimap_hud());
-        } else if had {
+        } else if !allowed && had {
             self.send_command(addr, 0, &build_hud_remove(HUD_MINIMAP));
         }
         info!("{}: minimap {}", self.peers.get(&addr).map_or("", |p| p.display_name()), if allowed { "allowed" } else { "off" });
@@ -4635,7 +4695,7 @@ impl Server {
     }
 
     /// A line in everyone's chat area.
-    fn tell_all(&mut self, text: &str) {
+    pub(super) fn tell_all(&mut self, text: &str) {
         info!("CHAT: {text}");
         self.send_to_players(&build_chat_message(CHAT_RAW, "", text));
     }
@@ -4752,13 +4812,165 @@ impl Server {
         let Some(peer) = self.peers.get(&addr) else {
             return;
         };
-        let packet = if peer.guide.open {
-            build_recipes_formspec(&peer.guide)
+        let packet = if peer.creative && peer.creative_view.tab.is_some() {
+            build_creative_formspec(&peer.creative_view, peer.display_name())
+        } else if peer.guide.open {
+            build_recipes_formspec(&peer.guide, peer.creative)
         } else {
             let skin = self.skins.get(self.skins.index_of(&peer.skin));
-            build_inventory_formspec(&SkinChoice { label: &skin.label, texture: &skin.texture })
+            build_inventory_formspec(&SkinChoice { label: &skin.label, texture: &skin.texture }, peer.creative)
         };
         self.send_command(addr, 0, &packet);
+    }
+
+    // -------------------------------------------------------------------
+    // Creative mode (creative.rs)
+    // -------------------------------------------------------------------
+
+    /// Tell a client which privileges it has (with fly and noclip in
+    /// creative mode).
+    pub(super) fn send_privileges(&mut self, addr: SocketAddr) {
+        let Some(privs) = self.peers.get(&addr).map(|p| p.shown_privs()) else {
+            return;
+        };
+        self.send_command(addr, 0, &build_privileges(&privs.names()));
+    }
+
+    /// The creative inventory's list as this player sees it, and the
+    /// trash (detached inventories).
+    fn send_creative_lists(&mut self, addr: SocketAddr) {
+        let Some(peer) = self.peers.get(&addr) else {
+            return;
+        };
+        let items: Vec<Option<String>> = peer.creative_view.items.iter().map(|&id| Some(content::name_of(id).to_string())).collect();
+        let list = build_detached_inventory(&creative::detached_name(peer.display_name()), &[("main", 0, items)]);
+        let trash = build_detached_inventory(creative::TRASH, &[("main", 0, vec![None])]);
+        self.send_command(addr, 0, &list);
+        self.send_command(addr, 0, &trash);
+    }
+
+    /// Bring a player into or out of creative mode, as the server's mode
+    /// and their creative privilege say: the creative inventory (or not)
+    /// as the window's first page, the creative hand, fly and noclip, the
+    /// health bar hidden and no damage (immortal).
+    pub(super) fn update_creative(&mut self, addr: SocketAddr) {
+        let creative_mode = self.settings.creative();
+        let Some(peer) = self.peers.get_mut(&addr) else {
+            return;
+        };
+        let now = creative_mode || peer.privs.has("creative");
+        if now == peer.creative || !peer.ready {
+            peer.creative = now;
+            return;
+        }
+        peer.creative = now;
+        let (id, hp, name) = (peer.id, peer.hp, peer.display_name().to_string());
+        if now {
+            peer.guide.open = false;
+            peer.creative_view.open(creative::Tab::All);
+            peer.breath = PLAYER_MAX_BREATH;
+        } else {
+            peer.creative_view.tab = None;
+        }
+        info!("{name} is {} creative mode", if now { "now in" } else { "out of" });
+        self.send_privileges(addr);
+        self.send_inventory(addr);
+        if now {
+            self.send_creative_lists(addr);
+            self.send_command(addr, 0, &build_hud_remove(HUD_HEALTH));
+            self.send_breath(addr);
+            self.send_to_players(&build_object_messages(&[(id, immortal_message())]));
+        } else {
+            self.send_command(addr, 0, &build_health_bar(hp));
+            self.send_to_players(&build_object_messages(&[(id, armor_groups_message())]));
+        }
+        self.send_inventory_formspec(addr);
+        self.update_minimap(addr);
+    }
+
+    /// Everyone's creative state, after the server's mode changed.
+    pub(super) fn update_creative_all(&mut self) {
+        let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
+        for addr in all {
+            self.update_creative(addr);
+        }
+    }
+
+    /// An inventory action on the creative inventory or the trash (the
+    /// detached inventories' callbacks): taking from the creative list
+    /// leaves it there (allow_take -1), nothing can be put into it, and
+    /// what goes into the trash is gone. None if the action is on neither.
+    fn creative_action(&mut self, from: SocketAddr, action: &inventory::Action) -> Option<bool> {
+        use inventory::Action;
+        let peer = self.peers.get_mut(&from)?;
+        let own_list = creative::detached_name(peer.display_name());
+        let is_list = |loc: &str| loc.strip_prefix("detached:") == Some(own_list.as_str());
+        let is_trash = |loc: &str| loc.strip_prefix("detached:") == Some(creative::TRASH);
+        let name = peer.display_name().to_string();
+        let (src, dst) = match action {
+            Action::Move { from, to, .. } => (from.clone(), Some((to.0.clone(), to.1.clone(), Some(to.2)))),
+            Action::MoveSomewhere { from, to, .. } => (from.clone(), Some((to.0.clone(), to.1.clone(), None))),
+            Action::Drop { from, .. } => (from.clone(), None),
+            _ => return None,
+        };
+        let to_creative = dst.as_ref().is_some_and(|(i, _, _)| is_list(i) || is_trash(i));
+        if !is_list(&src.0) && !is_trash(&src.0) && !to_creative {
+            return None;
+        }
+        if !peer.creative {
+            return Some(false);
+        }
+        let count = match action {
+            Action::Move { count, .. } | Action::MoveSomewhere { count, .. } | Action::Drop { count, .. } => *count,
+            _ => 0,
+        };
+        // From the creative list: one of the item, wherever it goes.
+        if is_list(&src.0) {
+            let Some(item) = peer.creative_view.item_at(src.2) else {
+                return Some(false);
+            };
+            let one = Stack::new(item, 1);
+            return Some(match dst {
+                None => {
+                    info!("{name} takes {} from the creative inventory (dropped)", content::name_of(item));
+                    let throw = drop_motion(peer.pos_bs, peer.yaw, peer.pitch);
+                    self.spawn_item(one, throw);
+                    true
+                }
+                Some((inv, list, slot)) if inventory::is_own(&inv, &name) && list == "main" => {
+                    let ok = match slot {
+                        None => peer.inventory.add(one) == 0,
+                        Some(slot) => match peer.inventory.get(slot) {
+                            None => {
+                                peer.inventory.set(slot, Some(one));
+                                true
+                            }
+                            Some(s) if s.id == item && s.count < content::stack_max(item) => {
+                                peer.inventory.set(slot, Some(Stack { count: s.count + 1, ..s }));
+                                true
+                            }
+                            Some(_) => false,
+                        },
+                    };
+                    if ok {
+                        info!("{name} takes {} from the creative inventory", content::name_of(item));
+                    }
+                    ok
+                }
+                _ => false,
+            });
+        }
+        // Into the trash, from the player's own lists: gone.
+        if dst.as_ref().is_some_and(|(i, _, _)| is_trash(i)) && inventory::is_own(&src.0, &name) {
+            let list = inventory::List::from_name(&src.1)?;
+            let gone = peer.inventory.take(list, src.2, count);
+            if let Some(gone) = gone {
+                info!("{name} throws away {}", gone.item_string());
+            }
+            return Some(gone.is_some());
+        }
+        // Into the creative list, or out of the trash: nothing.
+        Some(false)
     }
 
     /// Buttons in the inventory window: its tabs, the crafting guide on the
@@ -4807,11 +5019,24 @@ impl Server {
         if !peer.ready {
             return;
         }
-        // A tab: Crafting or Recipes.
+        // A tab: Crafting, Recipes, or (in creative mode) one of the
+        // creative inventory's.
         if let Some((_, tab)) = fields.iter().find(|(f, _)| f == craftguide::TABS) {
-            let open = tab == "2";
-            if open != peer.guide.open {
-                peer.guide.open = open;
+            let n: usize = tab.parse().unwrap_or(1);
+            peer.guide.open = n == 2;
+            match creative::Tab::EVERY.get(n.wrapping_sub(3)).filter(|_| peer.creative) {
+                Some(&t) => {
+                    peer.creative_view.open(t);
+                    self.send_creative_lists(from);
+                }
+                None => peer.creative_view.tab = None,
+            }
+            self.send_inventory_formspec(from);
+            return;
+        }
+        if peer.creative && peer.creative_view.tab.is_some() {
+            if peer.creative_view.on_fields(&fields) {
+                self.send_creative_lists(from);
                 self.send_inventory_formspec(from);
             }
             return;
@@ -4926,7 +5151,7 @@ impl Server {
         };
         info!("{name} put a boat on the water at {under:?} ({} boats)", self.boats.len());
         if let Some(peer) = self.peers.get_mut(&from) {
-            peer.inventory.take_one(slot);
+            peer.use_one(slot);
         }
         self.inventory_changed(from);
         if let Some(b) = self.boats.get(id) {
@@ -5115,7 +5340,7 @@ impl Server {
         };
         info!("{name} put a cart on the rail at {at:?} ({} carts)", self.carts.len());
         if let Some(peer) = self.peers.get_mut(&from) {
-            peer.inventory.take_one(slot);
+            peer.use_one(slot);
         }
         self.inventory_changed(from);
         self.play_sound_near(-1, "default_place_node_metal", 0.5, above.map(|v| v as f32 * 10.0), HEARING);
@@ -5279,14 +5504,22 @@ impl Server {
         let riders: Vec<(SocketAddr, u16)> = self.peers.iter().filter_map(|(a, p)| p.riding.filter(|r| carts::is_cart_id(*r)).map(|r| (*a, r))).collect();
         let mut turns = Vec::new();
         for (addr, cart) in riders {
-            if let (Some(pos), Some(peer)) = (self.carts.get(cart).map(|c| c.pos_bs()), self.peers.get_mut(&addr)) {
-                peer.pos_bs = pos;
-                if let Some((from, total, done)) = peer.cart_turn {
-                    let done = (done.abs() + CART_TURN_RATE * dt).min(total.abs()) * total.signum();
-                    peer.yaw = (from + done).rem_euclid(360.0);
-                    peer.cart_turn = (done != total).then_some((from, total, done));
-                    turns.push((addr, build_move_player(pos, peer.pitch, peer.yaw)));
-                }
+            let Some(pos) = self.carts.get(cart).map(|c| c.pos_bs()) else {
+                continue;
+            };
+            let Some(peer) = self.peers.get_mut(&addr) else {
+                continue;
+            };
+            peer.pos_bs = pos;
+            let mut moved = false;
+            if let Some((from, total, done)) = peer.cart_turn {
+                let done = (done.abs() + CART_TURN_RATE * dt).min(total.abs()) * total.signum();
+                peer.yaw = (from + done).rem_euclid(360.0);
+                peer.cart_turn = (done != total).then_some((from, total, done));
+                moved = true;
+            }
+            if moved {
+                turns.push((addr, build_move_player(pos, peer.pitch, peer.yaw)));
             }
         }
         for (addr, packet) in turns {
@@ -6071,10 +6304,17 @@ impl Server {
     /// A player loses `damage` HP; at 0 they die, and the event says how
     /// (`death`, after their name).
     fn hurt(&mut self, from: SocketAddr, damage: u16, death: &str) {
+        self.harm_player(from, damage, death, false);
+    }
+
+    /// Take HP from a player; in creative mode nothing hurts (as with
+    /// Luanti's enable_damage off), unless `anyway` (/kill, which sets HP
+    /// whatever).
+    pub(super) fn harm_player(&mut self, from: SocketAddr, damage: u16, death: &str, anyway: bool) {
         let Some(peer) = self.peers.get_mut(&from) else {
             return;
         };
-        if peer.hp == 0 {
+        if peer.hp == 0 || (peer.creative && !anyway) {
             return;
         }
         peer.hp = peer.hp.saturating_sub(damage);
@@ -6145,6 +6385,21 @@ impl Server {
             return;
         }
         let text = String::from_utf8_lossy(&payload[2..]).into_owned();
+        // The creative inventory and the trash.
+        if let Some(action) = inventory::parse_action(&text) {
+            if let Some(ok) = self.creative_action(from, &action) {
+                if ok {
+                    self.inventory_changed(from);
+                } else {
+                    self.send_inventory(from);
+                }
+                self.send_creative_lists(from);
+                return;
+            }
+        }
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
         let name = peer.display_name().to_string();
         let open_furnace = peer.furnace;
         let open_chest = peer.chest;
@@ -6769,12 +7024,17 @@ impl Server {
         let Some(peer) = self.peers.get(&addr) else {
             return;
         };
-        let lists: Vec<_> = peer
+        let mut lists: Vec<_> = peer
             .inventory
             .lists()
             .into_iter()
             .map(|(name, width, slots)| (name, width, slots.iter().map(|s| s.map(|s| s.item_string())).collect()))
             .collect();
+        // In creative mode, the creative hand: the client digs and punches
+        // with it when nothing is wielded.
+        if peer.creative {
+            lists.push(("hand", 0, vec![Some(content::name_of(creative::HAND_ITEM).to_string())]));
+        }
         let packet = build_inventory(&lists);
         self.send_command(addr, 0, &packet);
     }

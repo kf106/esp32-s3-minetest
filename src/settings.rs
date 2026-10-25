@@ -5,7 +5,9 @@
 //! are on in a new world (minetest_game turns them off on servers unless
 //! set; here `/fire` and `/tnt` turn them off). And ours, `enable_mobs`
 //! (whether hostile mobs spawn: mobs.rs), off in a new world, since
-//! minetest_game has none (`/mobs` turns them on).
+//! minetest_game has none (`/mobs` turns them on). And Luanti's
+//! `creative_mode`, off in a new world (`/mode creative` turns it on:
+//! creative.rs).
 
 use std::io;
 use std::path::PathBuf;
@@ -19,6 +21,7 @@ pub struct Settings {
     fire: bool,
     tnt: bool,
     mobs: bool,
+    creative: bool,
 }
 
 impl Settings {
@@ -35,6 +38,10 @@ impl Settings {
         let fire = flag(&text, "enable_fire").unwrap_or(true);
         let tnt = flag(&text, "enable_tnt").unwrap_or(true);
         let mobs = flag(&text, "enable_mobs").unwrap_or(false);
+        let creative = flag(&text, "creative_mode").unwrap_or(false);
+        if creative {
+            info!("Creative mode is on (creative_mode = true in {})", path.display());
+        }
         if !fire {
             info!("Fire spreading is off (enable_fire = false in {})", path.display());
         }
@@ -44,7 +51,7 @@ impl Settings {
         if mobs {
             info!("Mobs are on (enable_mobs = true in {})", path.display());
         }
-        Self { path, fire, tnt, mobs }
+        Self { path, fire, tnt, mobs, creative }
     }
 
     /// Whether fire spreads and burns things.
@@ -60,6 +67,16 @@ impl Settings {
     /// Whether hostile mobs spawn.
     pub fn mobs(&self) -> bool {
         self.mobs
+    }
+
+    /// Whether the whole server is in creative mode.
+    pub fn creative(&self) -> bool {
+        self.creative
+    }
+
+    pub fn set_creative(&mut self, on: bool) {
+        self.creative = on;
+        self.save();
     }
 
     pub fn set_mobs(&mut self, on: bool) {
@@ -78,7 +95,7 @@ impl Settings {
     }
 
     fn save(&self) {
-        let text = format!("enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\n", self.fire, self.tnt, self.mobs);
+        let text = format!("enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\ncreative_mode = {}\n", self.fire, self.tnt, self.mobs, self.creative);
         if let Err(e) = storage::write(&self.path, text.as_bytes()) {
             warn!("Saving {}: {e}", self.path.display());
             crate::status::problem();
@@ -116,8 +133,11 @@ mod tests {
         assert!(!s.fire() && !s.tnt() && !s.mobs());
         let mut s = Settings::open(&path);
         s.set_mobs(true);
+        let mut s = Settings::open(&path);
+        assert!(!s.fire() && s.mobs() && !s.creative());
+        s.set_creative(true);
         let s = Settings::open(&path);
-        assert!(!s.fire() && s.mobs());
+        assert!(s.creative() && s.mobs());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

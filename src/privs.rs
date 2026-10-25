@@ -33,7 +33,7 @@ use crate::storage;
 
 /// The privileges, with Luanti's descriptions. Only ones that do something
 /// here.
-pub const ALL: [(&str, &str); 16] = [
+pub const ALL: [(&str, &str); 17] = [
     ("interact", "Can interact with things and modify the world"),
     ("shout", "Can speak in chat"),
     ("basic_privs", "Can modify basic privileges (interact, shout)"),
@@ -51,6 +51,8 @@ pub const ALL: [(&str, &str); 16] = [
     ("noclip", "Can fly through solid nodes using noclip mode"),
     // minetest_game's sethome mod.
     ("home", "Can use /sethome and /home"),
+    // minetest_game's creative mod.
+    ("creative", "Allow player to use creative inventory"),
 ];
 
 /// A set of privileges: bit i is ALL[i].
@@ -101,6 +103,12 @@ impl Privs {
     fn from_line(line: &str) -> Privs {
         line.split(',').filter_map(|n| Privs::of(n.trim())).fold(Privs::NONE, Privs::with)
     }
+}
+
+/// The server's admin has every privilege, but those not given to admins
+/// (give_to_admin = false): creative.
+pub fn admin_privs() -> Privs {
+    Privs::EVERY.without(Privs::of("creative").unwrap())
 }
 
 /// Luanti's default_privs and basic_privs: interact and shout.
@@ -223,7 +231,7 @@ impl Store {
     /// what is stored, or the default ones.
     pub fn privs(&self, name: &str) -> Privs {
         if self.is_admin(name) {
-            return Privs::EVERY;
+            return admin_privs();
         }
         if !self.on_disk() {
             return default_privs();
@@ -365,7 +373,7 @@ mod tests {
         let mut s = Store::in_memory();
         assert_eq!(s.privs("Jane"), default_privs());
         assert!(s.claim_admin("Keir") && !s.claim_admin("Jane"));
-        assert!(s.is_admin("keir") && s.privs("KEIR") == Privs::EVERY);
+        assert!(s.is_admin("keir") && s.privs("KEIR") == admin_privs() && !admin_privs().has("creative"));
         let ip: IpAddr = "192.168.4.2".parse().unwrap();
         s.ban("Griefer", ip);
         assert!(s.ban_on("griefer", "10.0.0.1".parse().unwrap()).is_some(), "by name");

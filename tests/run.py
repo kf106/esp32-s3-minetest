@@ -69,6 +69,7 @@ NETWORK = [
     ("moss", {"LUANTI_MOSS_FAST": "1"}, ["{water}"], False),
     ("boats", {}, ["{water}"], False),
     ("carts", {}, [], False),
+    ("creative", {}, [], False),
     ("dungeon", {}, ["{chest}", "{front}"], False),
 ]
 

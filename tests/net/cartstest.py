@@ -135,4 +135,5 @@ watch(c, 2, until=lambda: cart in removed and invs)
 assert cart in removed and invs and b"esp:cart" in invs[-1], invs[-1:]
 assert attached(stick)[-1] == 0, "the stick stayed attached"
 print("picked up; the stick fell out")
+
 c.raw(0, b"\x00\x03"); time.sleep(0.3); print("CARTS OK")

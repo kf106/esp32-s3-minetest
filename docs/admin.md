@@ -4,7 +4,7 @@ Privileges work as in Luanti. Each player has a set of them, and chat commands c
 
 - **New players** get Luanti's defaults, `interact` (dig, build, use and move items) and `shout` (chat). No fly, fast or noclip until the administrator grants them.
 - **The administrator** has every privilege, always: they can't be revoked, kicked or banned. It is the first player to log in to a new world, or, for a world from before there was an administrator, the first to log in after the update. The name is kept in `/sd/auth/admin.txt`; to hand the role on, put another name there on a PC (one line) and restart. `/admin` shows who it is.
-- **Privileges:** `interact`, `shout`, `fly`, `fast`, `noclip` (pass through blocks while flying), `teleport` (self), `bring` (teleport others), `settime`, `give`, `kick`, `ban`, `password`, `server`, `privs` (grant and revoke anything), `basic_privs` (grant and revoke only `interact` and `shout`, for a moderator) and `home` (`/sethome` and `/home`).
+- **Privileges:** `interact`, `shout`, `fly`, `fast`, `noclip` (pass through blocks while flying), `teleport` (self), `bring` (teleport others), `settime`, `give`, `kick`, `ban`, `password`, `server`, `privs` (grant and revoke anything), `basic_privs` (grant and revoke only `interact` and `shout`, for a moderator), `home` (`/sethome` and `/home`) and `creative` (creative mode for that player alone, as Minetest Game's; the administrator doesn't get it automatically). In creative mode (`/mode creative`) everyone may fly and noclip.
 
 The commands, with Luanti's wording:
 
@@ -22,6 +22,7 @@ The commands, with Luanti's wording:
 | `/time <hh:mm \| 0..24000>` | `settime` | Set the time of day |
 | `/fire [on \| off]` | `server` or `ban` (to change it) | Whether fire spreads and burns things, and how many flames burn; turn it on or off (ours: Minetest Game has the `enable_fire` setting) |
 | `/mobs [on \| off \| spawn [mossling \| wisp \| hexer]]` | `server` or `ban` (to turn them on or off), `server` (to spawn) | Whether hostile mobs spawn, and how many there are; turn them on or off (off in a new world), or bring a pack of mosslings, a wisp or a hexer in front of you (ours: Minetest Game has no mobs) |
+| `/mode [classic \| survival \| creative]` | `server` (to set it) | The game mode, or set it for everyone: classic (Minetest Game, no mobs), survival (with mobs) or creative (creative inventory, instant digging, flying, no damage, no mobs). Kept in `world/settings.txt` as `creative_mode` and `enable_mobs` |
 | `/tnt [on \| off]` | `server` or `ban` (to change it) | Whether TNT and gunpowder can be lit; turn them on or off, to stop a griefer (ours: Minetest Game has `enable_tnt`) |
 | `/teleport <x>,<y>,<z> \| <name>` | `teleport` | Go to a place (`~` for where you are: `~ ~20 ~`) or to a player |
 | `/teleport <name> <x>,<y>,<z> \| <name2>` | `bring` | Move another player (to a player: beside them, with room to stand) |

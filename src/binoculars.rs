@@ -46,10 +46,10 @@ pub fn minimap(main: &[Option<Stack>]) -> bool {
     carries(main, ITEM_MAPPING_KIT)
 }
 
-/// The HUD flags for that, and the mask they go with (the radar always
-/// off).
-pub fn minimap_flags(allowed: bool) -> (u32, u32) {
-    let flags = if allowed { HUD_FLAG_MINIMAP_VISIBLE } else { 0 };
+/// The HUD flags for that, and the mask they go with: the radar too in
+/// creative mode (map.update_hud_flags), else never.
+pub fn minimap_flags(allowed: bool, radar: bool) -> (u32, u32) {
+    let flags = if allowed { HUD_FLAG_MINIMAP_VISIBLE } else { 0 } | if radar { HUD_FLAG_MINIMAP_RADAR_VISIBLE } else { 0 };
     (flags, HUD_FLAG_MINIMAP_VISIBLE | HUD_FLAG_MINIMAP_RADAR_VISIBLE)
 }
 
@@ -67,7 +67,8 @@ mod tests {
         assert!(!minimap(&main));
         main[9] = Some(Stack::new(ITEM_MAPPING_KIT, 1));
         assert!(minimap(&main));
-        assert_eq!(minimap_flags(true), (1 << 5, (1 << 5) | (1 << 6)));
-        assert_eq!(minimap_flags(false), (0, (1 << 5) | (1 << 6)));
+        assert_eq!(minimap_flags(true, false), (1 << 5, (1 << 5) | (1 << 6)));
+        assert_eq!(minimap_flags(false, false), (0, (1 << 5) | (1 << 6)));
+        assert_eq!(minimap_flags(true, true), ((1 << 5) | (1 << 6), (1 << 5) | (1 << 6)));
     }
 }

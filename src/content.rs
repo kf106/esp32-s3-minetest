@@ -435,6 +435,8 @@ pub const TOOL_SCREWDRIVER: u16 = 0x201B;
 pub const TOOL_FLINT_AND_STEEL: u16 = 0x201C;
 /// The fireflies mod's bug net.
 pub const TOOL_BUG_NET: u16 = 0x201D;
+/// The creative hand (creative.rs): in a creative player's "hand" list.
+pub const TOOL_CREATIVE_HAND: u16 = 0x201E;
 /// Light given off by a torch (minetest_game: LIGHT_MAX - 1 = 13; 12 is
 /// slightly gentler and keeps the lit area, and the work, smaller).
 pub const TORCH_LIGHT: u8 = 12;
@@ -4320,6 +4322,18 @@ pub const TOOLS: &[Tool] = &[
         },
         groups: &[],
     },
+    // The creative hand (creative.rs): what a creative player digs and
+    // punches with (minetest_game's creative mod's hand). Not an item to
+    // have: nowhere listed.
+    Tool {
+        id: TOOL_CREATIVE_HAND,
+        name: "esp:creative_hand",
+        description: "",
+        image: "esp_hand.png",
+        wield_image: "esp_hand.png",
+        caps: crate::creative::HAND_CAPS,
+        groups: &[("not_in_creative_inventory", 1), ("not_in_craft_guide", 1)],
+    },
 ];
 
 /// The sound a tool makes when it wears out (minetest_game's sound.breaks).
@@ -5070,6 +5084,11 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("carts_cart_moving.1.ogg", include_bytes!("../media/carts_cart_moving.1.ogg")),
     ("carts_cart_moving.2.ogg", include_bytes!("../media/carts_cart_moving.2.ogg")),
     ("carts_cart_moving.3.ogg", include_bytes!("../media/carts_cart_moving.3.ogg")),
+    ("creative_prev_icon.png", include_bytes!("../media/creative_prev_icon.png")),
+    ("creative_next_icon.png", include_bytes!("../media/creative_next_icon.png")),
+    ("creative_search_icon.png", include_bytes!("../media/creative_search_icon.png")),
+    ("creative_clear_icon.png", include_bytes!("../media/creative_clear_icon.png")),
+    ("creative_trash_icon.png", include_bytes!("../media/creative_trash_icon.png")),
     ("boats_boat.obj", include_bytes!("../media/boats_boat.obj")),
     ("boats_inventory.png", include_bytes!("../media/boats_inventory.png")),
     ("boats_wield.png", include_bytes!("../media/boats_wield.png")),
@@ -5663,7 +5682,7 @@ fn serialize_item(item: &Item) -> Vec<u8> {
     w.string16(item.place_prediction);
     sound(&mut w, item.place_sound); // sound_place
     no_sound(&mut w); // sound_place_failed
-    w.f32(4.0) // range
+    w.f32(if item.name == "esp:creative_hand" { crate::creative::HAND_RANGE } else { 4.0 }) // range
         .string16("") // palette image
         .u32(0xFFFF_FFFF); // colour (ARGB)
     item_image(&mut w, ""); // inventory overlay
@@ -5831,7 +5850,8 @@ pub fn itemdef_bytes() -> Vec<u8> {
             description: t.description,
             inventory_image: t.image,
             wield_image: t.wield_image,
-            wield_scale: [1.0, 1.0, 1.0],
+            // The creative hand looks as the hand does.
+            wield_scale: if t.id == TOOL_CREATIVE_HAND { [1.0, 1.0, 2.5] } else { [1.0, 1.0, 1.0] },
             place_prediction: "",
             tool_capabilities: tool_capabilities(&t.caps),
             place_sound: ("", 1.0),

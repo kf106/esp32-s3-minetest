@@ -47,6 +47,7 @@ const COMMANDS: &[Command] = &[
     cmd("kill", "[<name>]", "Kill player or yourself", &["server"]),
     cmd("me", "<action>", "Show chat action (e.g., '/me orders a pizza' displays '<player name> orders a pizza')", &["shout"]),
     cmd("mobs", "[on | off | spawn [mossling | wisp | hexer]]", "Show whether hostile mobs spawn, or turn them on or off, or bring a pack", &[]),
+    cmd("mode", "[classic | survival | creative]", "Show the game mode, or set it: classic (Minetest Game), survival (with mobs) or creative", &[]),
     cmd("msg", "<name> <message>", "Send a direct message to a player", &["shout"]),
     cmd("privs", "[<name>]", "Show privileges of yourself or another player", &[]),
     cmd("revoke", "<name> (<privilege> [, <privilege2> [<...>]] | all)", "Remove privileges from player", &[]),
@@ -155,6 +156,7 @@ impl Server {
                 None
             }
             "mobs" => Some(self.cmd_mobs(name, param)),
+            "mode" => Some(self.cmd_mode(name, param)),
             "msg" => Some(self.cmd_msg(name, param)),
             "privs" => {
                 let who = if param.is_empty() { name } else { param };
@@ -213,7 +215,10 @@ impl Server {
             if let Some(peer) = self.peers.get_mut(&addr) {
                 peer.privs = privs;
             }
-            self.send_command(addr, 0, &build_privileges(&privs.names()));
+            self.send_privileges(addr);
+            // Granted or revoked creative (the creative mod's on_grant
+            // and on_revoke).
+            self.update_creative(addr);
         }
         Ok(())
     }
@@ -528,7 +533,7 @@ impl Server {
         if !victim.eq_ignore_ascii_case(caller) {
             info!("{caller} killed {victim}");
         }
-        self.hurt(addr, hp, "was killed");
+        self.harm_player(addr, hp, "was killed", true);
         format!("{victim} has been killed.")
     }
 
@@ -579,6 +584,35 @@ impl Server {
     /// or off, kept in the world (off, those about are gone at once); with
     /// "spawn" (and the server privilege), bring a pack of mosslings (or,
     /// "spawn wisp" or "spawn hexer", a wisp or a hexer) in front of you.
+    /// /mode: the game mode, a shortcut for the settings it amounts to:
+    /// classic (no mobs, no creative mode), survival (mobs) or creative
+    /// (creative mode, no mobs). Setting it needs the server privilege.
+    fn cmd_mode(&mut self, caller: &str, param: &str) -> String {
+        use crate::creative::Mode;
+        let now = Mode::of(self.settings.creative(), self.settings.mobs());
+        if param.is_empty() {
+            return format!("The game mode is {}.", now.describe());
+        }
+        let Some(mode) = Mode::parse(param) else {
+            return "Invalid parameters (see /help mode).".to_string();
+        };
+        if !self.privs_of(caller).has("server") {
+            return "You don't have permission to run this command (missing privilege: server).".to_string();
+        }
+        if mode == now {
+            return format!("The game mode is already {}.", mode.name());
+        }
+        self.settings.set_creative(mode == Mode::Creative);
+        self.settings.set_mobs(mode == Mode::Survival);
+        if mode != Mode::Survival {
+            self.clear_mobs();
+        }
+        self.update_creative_all();
+        info!("{caller} sets the game mode to {}", mode.name());
+        self.tell_all(&format!("{caller} set the game mode to {}.", mode.describe()));
+        format!("The game mode is now {}.", mode.name())
+    }
+
     fn cmd_mobs(&mut self, caller: &str, param: &str) -> String {
         let on = match param {
             "" => {

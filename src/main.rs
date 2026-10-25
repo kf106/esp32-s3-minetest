@@ -23,6 +23,7 @@ mod furnace;
 mod indicator;
 mod boats;
 mod carts;
+mod creative;
 mod insects;
 mod inventory;
 mod items;

@@ -1,6 +1,6 @@
 # Features
 
-What the server does, as of now. It covers nearly all of Minetest Game (33 of its 34 mods); what is still missing is at the end, under [What doesn't (yet)](#what-doesnt-yet), and what never will be under [What won't be done](#what-wont-be-done).
+What the server does, as of now. It covers all of Minetest Game (its 34 mods); what is still missing is at the end, under [What doesn't (yet)](#what-doesnt-yet), and what never will be under [What won't be done](#what-wont-be-done).
 
 ![In game, connected to the ESP32 server](../assets/screen-002.png)
 
@@ -140,12 +140,29 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 - **Buckets:** three steel ingots in a V make an empty bucket. Left-click water or lava with it to fill it; right-click to pour it out again, wherever you like. A lava bucket burns in a furnace for 60 s and leaves the empty bucket in the output.
 - **Keys:** Minetest Game's `keys`. A gold ingot makes a skeleton key. Use it (left-click) on your own locked chest, steel door or steel trapdoor (or steel bar door or trapdoor) and it becomes a key to it, "Key to <you>'s Locked Chest" and so on. Whoever holds that key in their hand can then open the chest, take from it and dig it, or open, shut and dig the door, as its owner can; sneak and right-click a door with the key to open or shut it. Every key cut for the same lock fits it. A skeleton key on someone else's lock says "You do not own this chest." Keys and skeleton keys melt back into gold (5 s). The lock's secret is kept with the chest in `world/chests.txt`, or the door in `world/doors.txt`.
 - **Screwdriver:** Minetest Game's. A steel ingot over a stick makes one. Left-click turns the node you point at about its face, right-click about its axis (sneak to turn chests, furnaces and the like, which a right-click would open): chests, furnaces, shelves, stairs and slabs, trapdoors, gates, signs, ladders and so on. Torches and doors don't turn; nor does a chest, furnace or shelf with something in it, or someone else's locked chest or trapdoor. A bed turns on its bottom half, if there is room for its top where it goes. Each turn wears the screwdriver; it lasts 200.
-- **Binoculars and mapping kit:** Minetest Game's `binoculars` and `map`. Two obsidian glass either side of three bronze ingots, above and below, make binoculars; carried anywhere in your inventory they let you zoom (the Zoom key, to a 10° view). Glass, paper and a stick over a steel ingot, paper and a steel ingot over planks, paper and black dye make a mapping kit; carried, it lets you show the minimap (the Minimap key). As in Minetest Game, without a mapping kit there is no minimap, and the radar view is never on (there is no creative mode). The server looks again every 5 s or so, and when you use (left-click) the binoculars or the kit. A mapping kit burns for 5 s.
+- **Binoculars and mapping kit:** Minetest Game's `binoculars` and `map`. Two obsidian glass either side of three bronze ingots, above and below, make binoculars; carried anywhere in your inventory they let you zoom (the Zoom key, to a 10° view). Glass, paper and a stick over a steel ingot, paper and a steel ingot over planks, paper and black dye make a mapping kit; carried, it lets you show the minimap (the Minimap key). As in Minetest Game, without a mapping kit there is no minimap, and the radar view is never on (except in creative mode, which has both without a kit). The server looks again every 5 s or so, and when you use (left-click) the binoculars or the kit. A mapping kit burns for 5 s.
 - **Bottles, glasses and the vessels shelf:** Minetest Game's `vessels`. Five glass in a bottle's shape (two columns of two over one in the middle) make 10 empty glass bottles, seven in a cup's shape (two columns of two over a row of three) 14 drinking glasses, and five steel ingots in the bottle's shape 5 heavy steel bottles. They stand on the floor (on something solid), you walk through them, and they fall off when what they stand on is dug. Two glass bottles, or two drinking glasses, break into glass fragments, which melt back into glass; a steel bottle melts back into a steel ingot. Three vessels of any kind between two rows of planks make a vessels shelf: like a bookshelf, but it holds 16 vessels (and nothing else), shows how many when pointed at, and burns for 30 s.
 - **Paper, books and bookshelves:** three papyrus in a row make paper, three paper in a column a book, and three books between two rows of planks a bookshelf. A bookshelf holds 16 books (and nothing else), shows how many it holds when pointed at, and can only be dug when empty. It burns for 30 s.
 - **Boats:** Minetest Game's `boats`. Five planks (any wood) in a U make a boat. Right-click water with it and it floats there, facing the way you look; right-click the boat to sit in it, and again to get out. Forward speeds it up (to about 5 nodes a second) and back slows it down, then takes it backwards; left and right turn it (the other way when going backwards). Forward and back together set it cruising, going on at full speed without the keys, until back is pressed ("Boat cruise mode on" and "off" in the chat). Water drags it to a stop when you let go. It floats on still or flowing water, rises to the surface from under water, and stops at the shore, or if it comes out of the water onto land. Punch it (with nobody in it) to take it back into your inventory; if that is full, it drops beside you. Mobs that hit you in a boat don't knock you back. Boats stay where they were left, over a restart (`world/boats.txt`); a world holds up to 32 on the board, 256 on a PC (Minetest Game has no limit). A boat burns for 20 s.
 - **Carts and rails:** Minetest Game's `carts`. Six steel ingots either side of two planks make 18 rails; with a mese crystal in the middle, 18 powered rails, with a coal lump, 18 brake rails. Rails lie on the ground and join up with their neighbours, as you see them: straight, curved, T-junctions, crossings, and slopes a node at a time. Five steel ingots in a U make a cart; right-click a rail with it to put it there. Punch a cart to push it the way you look (harder for a full swing); right-click it to get in (standing, your eyes lowered), and again to get out, on top of it; punch it from inside to push it on (unless it is going fast). Unlike Minetest Game, your view turns with the cart as it goes round a corner (not when it is pushed or turns back), and a stopped cart is solid, so you can't walk through it (a moving one isn't, as in Minetest Game, or it would stick going uphill). It follows the rails up and down slopes (slowing uphill) and round curves; at a junction it goes straight on, or left or right if you hold that key, else whichever way there is; at the end of the line it turns back. Back is a handbrake. It slows on its own, a powered rail speeds it up and a brake rail slows it; 7 nodes a second at most. A cart pushed picks up the dropped items it is on and carries them. Sneak and punch it to pick it up: the driver gets out, what it carries falls out, and it goes into your inventory. It rumbles as it rolls. Carts stay where they were left, over a restart (`world/carts.txt`); a world holds up to 32 on the board, 256 on a PC (Minetest Game has no limit). Dungeon chests can hold rails.
 - **Writing in books:** use a book (left-click with it in hand) to write a title and up to 10,000 characters in it; saved, it becomes a book with text, which shows its title and author in the inventory. Its author can go on editing it or read it; anyone else reads it, 14 lines a page. Saving a book with no title and no text leaves it an empty book (or makes it one again), where Minetest Game would keep a book with text titled "". A book with text and an empty book crafted together make a copy, and the original stays in the grid. What is written is kept in the item itself (Luanti's item metadata), so it goes wherever the book goes: chests, bookshelves, bones, dropped on the ground, other players.
+
+## Game modes and creative mode
+
+`/mode` shows the game mode, and an admin (`server` privilege) sets it for the whole server, kept in `world/settings.txt`:
+
+- **`/mode classic`:** Minetest Game as it normally is: no mobs, no creative mode. A new world starts in it.
+- **`/mode survival`:** the same, with our mobs at night (see Mobs).
+- **`/mode creative`:** Minetest Game's creative mode (Luanti's `creative_mode`), with no mobs. As in Minecraft's creative mode, players may also fly and noclip (the client's fly and noclip keys), and take no damage: no falls, drowning, lava, fire or blasts hurt (`/kill` still kills), and the health bar is hidden.
+
+What creative mode does, as Minetest Game's `creative` mod has it:
+
+- **The creative inventory:** the inventory window opens on it, with tabs for All, Nodes, Tools and Items beside Crafting and Recipes. Every item is there (442 of them), 32 a page, with a search box (by name or description, the closest matches first), previous and next page buttons, and a trash slot: whatever goes in it is gone. Taking an item gives you one and leaves it in the list; shift-click puts one in your inventory.
+- **The creative hand:** with nothing wielded, you dig anything in a moment, and reach 10 nodes. Tools don't wear out.
+- **Unlimited building:** placing a block (or a door, bed, boat, cart and so on) doesn't use it up; digging gives you a block only if you haven't one already.
+- **The minimap:** with its radar view, without a mapping kit.
+
+A player can also be in creative mode on their own with the `creative` privilege (Minetest Game's), granted by an admin; the server's admin doesn't get it automatically.
 
 ## Mobs
 
@@ -175,11 +192,7 @@ Not part of Minetest Game, which has none, so they are off unless an admin or mo
 
 ## What doesn't (yet)
 
-One of Minetest Game's 34 mods is still to come:
-
-- **Creative mode:** the creative inventory, with every item to take, and digging without limits.
-
-Smaller gaps in what is here:
+All 34 of Minetest Game's mods are here. Smaller gaps in what is here:
 
 - **Lit TNT doesn't fall** if what is under it goes.
 - **Clients:** only tested with Luanti 5.17. Older clients, down to protocol 37, are accepted but untested.
