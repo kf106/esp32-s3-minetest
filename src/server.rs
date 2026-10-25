@@ -1880,6 +1880,10 @@ impl Server {
         // sounds around (env_sounds').
         self.set_weather(from);
         self.play_env_sounds(from);
+        self.send_command(from, 0, &build_hotbar_hud());
+        for message in build_hotbar_images() {
+            self.send_command(from, 0, &message);
+        }
         let creative = self.peers.get(&from).is_some_and(|p| p.creative);
         if !creative {
             self.send_command(from, 0, &build_health_bar(hp));

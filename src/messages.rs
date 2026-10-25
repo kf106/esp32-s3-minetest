@@ -44,6 +44,7 @@ pub const TOCLIENT_HP: u16 = 0x33;
 pub const TOCLIENT_CHAT_MESSAGE: u16 = 0x2F;
 pub const TOCLIENT_DEATHSCREEN_LEGACY: u16 = 0x37;
 pub const TOCLIENT_HUDADD: u16 = 0x49;
+pub const TOCLIENT_HUD_SET_PARAM: u16 = 0x4d;
 pub const TOCLIENT_HUDCHANGE: u16 = 0x4b;
 pub const TOCLIENT_HUDRM: u16 = 0x4a;
 pub const TOCLIENT_BREATH: u16 = 0x4e;
@@ -1735,11 +1736,14 @@ pub fn build_deathscreen() -> Vec<u8> {
     w.into_inner()
 }
 
-/// Our HUD elements' ids: the health and breath bars, and the minimap.
+/// Our HUD elements' ids: the health and breath bars, the minimap, and
+/// the hotbar.
 pub const HUD_HEALTH: u32 = 0;
 pub const HUD_BREATH: u32 = 1;
 pub const HUD_MINIMAP: u32 = 2;
+pub const HUD_HOTBAR: u32 = 3;
 const HUD_ELEM_MINIMAP: u8 = 7;
+const HUD_ELEM_HOTBAR: u8 = 8;
 /// A player's breath when full (Luanti's PLAYER_MAX_BREATH_DEFAULT).
 pub const PLAYER_MAX_BREATH: u16 = 10;
 const HUD_ELEM_STATBAR: u8 = 2;
@@ -1850,6 +1854,51 @@ pub fn build_minimap_hud() -> Vec<u8> {
         .u32(0) // style
         .u8(1); // flags: hideable
     w.into_inner()
+}
+
+/// TOCLIENT_HUDADD for builtin's hotbar element (hud.lua): the client
+/// draws the hotbar only as a HUD element, which builtin adds for every
+/// player while the "hotbar" HUD flag is set (as it always is here);
+/// centred at the bottom of the screen, 4 pixels up.
+pub fn build_hotbar_hud() -> Vec<u8> {
+    let mut w = Writer::new(TOCLIENT_HUDADD);
+    w.u32(HUD_HOTBAR)
+        .u8(HUD_ELEM_HOTBAR)
+        .f32(0.5)
+        .f32(1.0) // position: bottom centre
+        .string16("")
+        .f32(0.0)
+        .f32(0.0) // scale
+        .string16("")
+        .u32(0) // number
+        .u32(0) // item
+        .u32(0) // direction: left to right
+        .f32(0.0)
+        .f32(-1.0) // align: centred, above the position
+        .f32(0.0)
+        .f32(-4.0) // offset: extra padding below
+        .f32(0.0)
+        .f32(0.0)
+        .f32(0.0) // world position
+        .f32(0.0)
+        .f32(0.0) // size
+        .i16(0) // z index
+        .string16("") // text2
+        .u32(0) // style
+        .u8(1); // flags: hideable
+    w.into_inner()
+}
+
+/// TOCLIENT_HUD_SET_PARAM: the hotbar's background and selection
+/// pictures, as MTG's default mod sets them on joining.
+pub fn build_hotbar_images() -> [Vec<u8>; 2] {
+    const HUD_PARAM_HOTBAR_IMAGE: u16 = 2;
+    const HUD_PARAM_HOTBAR_SELECTED_IMAGE: u16 = 3;
+    [(HUD_PARAM_HOTBAR_IMAGE, "gui_hotbar.png"), (HUD_PARAM_HOTBAR_SELECTED_IMAGE, "gui_hotbar_selected.png")].map(|(param, image)| {
+        let mut w = Writer::new(TOCLIENT_HUD_SET_PARAM);
+        w.u16(param).string16(image);
+        w.into_inner()
+    })
 }
 
 pub fn build_hud_remove(id: u32) -> Vec<u8> {

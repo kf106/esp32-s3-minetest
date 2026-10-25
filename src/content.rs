@@ -5098,6 +5098,8 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("default_bookshelf.png", include_bytes!("../media/default_bookshelf.png")),
     ("default_bookshelf_slot.png", include_bytes!("../media/default_bookshelf_slot.png")),
     ("gui_hb_bg.png", include_bytes!("../media/gui_hb_bg.png")),
+    ("gui_hotbar.png", include_bytes!("../media/gui_hotbar.png")),
+    ("gui_hotbar_selected.png", include_bytes!("../media/gui_hotbar_selected.png")),
     ("default_sign_steel.png", include_bytes!("../media/default_sign_steel.png")),
     ("default_sign_wall_wood.png", include_bytes!("../media/default_sign_wall_wood.png")),
     ("default_sign_wall_steel.png", include_bytes!("../media/default_sign_wall_steel.png")),

@@ -31,7 +31,7 @@ default_fern_3.png, default_marram_grass_1.png to default_marram_grass_3.png,
 default_kelp.png and default_coral_*.png, and the ore, metal and mineral textures
 default_mineral_*.png, default_*_lump.png, default_*_ingot.png, default_*_block.png,
 default_mese_crystal.png, default_mese_crystal_fragment.png, default_diamond.png,
-default_meselamp.png, default_mese_post_light_side.png, default_sign_*.png, default_cloud.png, default_dry_shrub.png, default_paper.png, default_book*.png, default_bookshelf*.png, gui_hb_bg.png, default_mese_post_light_side_dark.png, the ground and building textures default_gravel.png, default_clay.png,
+default_meselamp.png, default_mese_post_light_side.png, default_sign_*.png, default_cloud.png, default_dry_shrub.png, default_paper.png, default_book*.png, default_bookshelf*.png, gui_hb_bg.png, gui_hotbar.png, gui_hotbar_selected.png, default_mese_post_light_side_dark.png, the ground and building textures default_gravel.png, default_clay.png,
 default_brick.png, default_desert_*.png, default_silver_*.png, default_snowball.png,
 default_ice.png, default_permafrost.png, default_moss*.png, default_stones*.png,
 default_coniferous_litter*.png, default_obsidian_brick.png, default_obsidian_block.png,
