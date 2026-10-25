@@ -241,7 +241,16 @@ pub fn render(f: &mut Frame, view: &View) {
         let colour = if p == view.page { TEXT } else { RULE };
         f.fill(x0 + i * (dot + gap), HEIGHT - dot - 3, dot, dot, colour);
     }
+    // BOOT held for a hotspot: a blue bar growing along the bottom edge.
+    if let Some(done) = view.status.hotspot_hold {
+        let w = (done.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
+        f.fill(0, HEIGHT - HOLD_BAR, w, HOLD_BAR, HOLD_BLUE);
+    }
 }
+
+/// The hotspot hold bar's height and colour.
+const HOLD_BAR: usize = 8;
+const HOLD_BLUE: u16 = rgb(30, 136, 229);
 
 /// A bar `w` pixels wide, filled to `percent`, coloured by how full it is.
 fn bar(f: &mut Frame, at: (usize, usize), w: usize, percent: f32) {

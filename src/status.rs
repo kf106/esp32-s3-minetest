@@ -80,6 +80,14 @@ pub struct Status {
     pub chat: VecDeque<ChatLine>,
     /// Set when the board runs its own hotspot rather than joining Wi-Fi.
     pub hotspot: Option<Arc<Hotspot>>,
+    /// While BOOT is watched at start-up for a hotspot: the button doesn't
+    /// page through the screens then.
+    #[cfg_attr(not(target_os = "espidf"), allow(dead_code))]
+    pub hotspot_window: bool,
+    /// How far through the hold that asks for a hotspot BOOT is, 0 to 1,
+    /// while it is held (shown as a bar along the bottom of the screen);
+    /// 1 from when the hold is long enough until the hotspot is up.
+    pub hotspot_hold: Option<f32>,
 }
 
 /// Problems (such as failing to save to the SD card), counted from
@@ -132,6 +140,8 @@ impl Status {
             chats: 0,
             chat: VecDeque::new(),
             hotspot: None,
+            hotspot_window: false,
+            hotspot_hold: None,
         }))
     }
 

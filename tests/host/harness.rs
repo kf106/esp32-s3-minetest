@@ -1215,6 +1215,14 @@ fn main() {
             f.write_be(0..screen::HEIGHT, &mut out);
             std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();
         }
+        // BOOT half held for a hotspot at start-up: the bar along the bottom.
+        let mut hold = status::lock(&st).clone();
+        hold.hotspot_hold = Some(0.5);
+        let mut f = screen::Frame::new();
+        screen::render(&mut f, &screen::View { page: screen::Page::Overview, status: &hold, system: &sys });
+        let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
+        f.write_be(0..screen::HEIGHT, &mut out);
+        std::fs::write(format!("{OUT}/hold.rgb565"), out).unwrap();
         return;
     }
     if std::env::var("BENCH").is_ok() {

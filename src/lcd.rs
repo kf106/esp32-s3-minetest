@@ -267,6 +267,8 @@ fn run(lcd: Lcd, status: SharedStatus) {
     // Whether the board runs its own hotspot. Decided at start-up, after
     // this thread starts; when it is, the Join page (its QR code) is shown.
     let mut hotspot = false;
+    // The hotspot hold bar as last drawn (see Status::hotspot_hold).
+    let mut hold_drawn: Option<f32> = None;
     // The chip's temperature, read every few seconds for the LED's colour
     // (and shown on the Device page).
     let mut chip_temp: Option<f32> = None;
@@ -282,7 +284,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
         }
         // The LED, whether the screen is on or off: breathing and flashing
         // (see indicator.rs).
-        let (state, counts, hotspot_now) = {
+        let (state, counts, hotspot_now, window, hold) = {
             let st = status::lock(&status);
             let state = if st.address.starts_with("Wi-Fi") {
                 State::NoWifi
@@ -292,7 +294,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
                 let colour = chip_temp.map_or(screen::chip_colour(0.0), screen::chip_colour);
                 State::Running { players: st.players.len(), colour }
             };
-            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some())
+            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some(), st.hotspot_window, st.hotspot_hold)
         };
         if hotspot_now && !hotspot {
             hotspot = true;
@@ -330,7 +332,14 @@ fn run(lcd: Lcd, status: SharedStatus) {
             }
         }
 
-        let pressed = button.pressed();
+        // While BOOT is watched for a hotspot at start-up, a press is the
+        // start of that hold, not a page turn: the bar shows it instead.
+        let pressed = button.pressed() && !window;
+        let hold_changed = hold != hold_drawn;
+        if hold_changed {
+            hold_drawn = hold;
+            last_press = Instant::now();
+        }
         if pressed {
             last_press = Instant::now();
             if screen_on {
@@ -355,7 +364,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
             std::thread::sleep(BUTTON_POLL);
             continue;
         }
-        if !pressed && drawn.is_some_and(|t| t.elapsed() < REFRESH) {
+        if !pressed && !hold_changed && drawn.is_some_and(|t| t.elapsed() < REFRESH) {
             std::thread::sleep(BUTTON_POLL);
             continue;
         }

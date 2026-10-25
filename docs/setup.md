@@ -56,7 +56,7 @@ How the server chooses a network:
 
 ## Its own hotspot
 
-Where there is no Wi-Fi to join, the board can make its own network. Switch it on, and when the screen says "Hold BOOT now for a hotspot", hold the BOOT button for a second (it waits three seconds for this). Don't hold BOOT while plugging the board in: the chip then waits to be flashed instead of starting.
+Where there is no Wi-Fi to join, the board can make its own network. Switch it on, and when the screen says "Hold BOOT now for a hotspot", hold the BOOT button for a second (it waits three seconds for this). A blue bar grows along the bottom of the screen while you hold it; when it reaches the end, the hotspot starts and the screen shows its QR code. Let go before then and the bar goes, and the board joins Wi-Fi as usual. Don't hold BOOT while plugging the board in: the chip then waits to be flashed instead of starting.
 
 The hotspot is set in `wifi.txt` with a `hotspot` line, and the `password` line after it:
 

@@ -330,22 +330,38 @@ fn hotspot_asked(status: &status::SharedStatus) -> bool {
         gpio_set_direction(PIN_BOOT as _, gpio_mode_t_GPIO_MODE_INPUT);
         gpio_set_pull_mode(PIN_BOOT as _, gpio_pull_mode_t_GPIO_PULLUP_ONLY);
     }
-    status::lock(status).event("Hold BOOT now for a hotspot".to_string());
+    {
+        let mut st = status::lock(status);
+        st.event("Hold BOOT now for a hotspot".to_string());
+        st.hotspot_window = true;
+    }
     info!("Hold BOOT for {}s now to run a hotspot", HOTSPOT_HOLD.as_secs());
+    let show = |hold: Option<f32>| status::lock(status).hotspot_hold = hold;
     let start = Instant::now();
     let mut held_since: Option<Instant> = None;
     while start.elapsed() < HOTSPOT_WINDOW || held_since.is_some() {
         let down = unsafe { gpio_get_level(PIN_BOOT as _) } == 0;
         match (down, held_since) {
             (true, None) => held_since = Some(Instant::now()),
-            (false, _) => held_since = None,
+            (false, Some(_)) => {
+                held_since = None;
+                show(None);
+            }
             _ => {}
         }
-        if held_since.is_some_and(|t| t.elapsed() >= HOTSPOT_HOLD) {
-            return true;
+        if let Some(t) = held_since {
+            let done = t.elapsed().as_secs_f32() / HOTSPOT_HOLD.as_secs_f32();
+            show(Some(done.min(1.0)));
+            if done >= 1.0 {
+                // The bar stays full until the hotspot is up (start_hotspot).
+                return true;
+            }
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+    let mut st = status::lock(status);
+    st.hotspot_window = false;
+    st.hotspot_hold = None;
     false
 }
 
@@ -400,6 +416,8 @@ fn start_hotspot(
         ip: ip.to_string(),
         qr,
     }));
+    st.hotspot_window = false;
+    st.hotspot_hold = None;
     Ok(wifi)
 }
 
