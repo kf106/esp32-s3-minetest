@@ -143,6 +143,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 - **Binoculars and mapping kit:** Minetest Game's `binoculars` and `map`. Two obsidian glass either side of three bronze ingots, above and below, make binoculars; carried anywhere in your inventory they let you zoom (the Zoom key, to a 10° view). Glass, paper and a stick over a steel ingot, paper and a steel ingot over planks, paper and black dye make a mapping kit; carried, it lets you show the minimap (the Minimap key). As in Minetest Game, without a mapping kit there is no minimap, and the radar view is never on (there is no creative mode). The server looks again every 5 s or so, and when you use (left-click) the binoculars or the kit. A mapping kit burns for 5 s.
 - **Bottles, glasses and the vessels shelf:** Minetest Game's `vessels`. Five glass in a bottle's shape (two columns of two over one in the middle) make 10 empty glass bottles, seven in a cup's shape (two columns of two over a row of three) 14 drinking glasses, and five steel ingots in the bottle's shape 5 heavy steel bottles. They stand on the floor (on something solid), you walk through them, and they fall off when what they stand on is dug. Two glass bottles, or two drinking glasses, break into glass fragments, which melt back into glass; a steel bottle melts back into a steel ingot. Three vessels of any kind between two rows of planks make a vessels shelf: like a bookshelf, but it holds 16 vessels (and nothing else), shows how many when pointed at, and burns for 30 s.
 - **Paper, books and bookshelves:** three papyrus in a row make paper, three paper in a column a book, and three books between two rows of planks a bookshelf. A bookshelf holds 16 books (and nothing else), shows how many it holds when pointed at, and can only be dug when empty. It burns for 30 s.
+- **Boats:** Minetest Game's `boats`. Five planks (any wood) in a U make a boat. Right-click water with it and it floats there, facing the way you look; right-click the boat to sit in it, and again to get out. Forward speeds it up (to about 5 nodes a second) and back slows it down, then takes it backwards; left and right turn it (the other way when going backwards). Forward and back together set it cruising, going on at full speed without the keys, until back is pressed ("Boat cruise mode on" and "off" in the chat). Water drags it to a stop when you let go. It floats on still or flowing water, rises to the surface from under water, and stops at the shore, or if it comes out of the water onto land. Punch it (with nobody in it) to take it back into your inventory; if that is full, it drops beside you. Mobs that hit you in a boat don't knock you back. Boats stay where they were left, over a restart (`world/boats.txt`); a world holds up to 32 on the board, 256 on a PC (Minetest Game has no limit). A boat burns for 20 s.
 - **Writing in books:** use a book (left-click with it in hand) to write a title and up to 10,000 characters in it; saved, it becomes a book with text, which shows its title and author in the inventory. Its author can go on editing it or read it; anyone else reads it, 14 lines a page. Saving a book with no title and no text leaves it an empty book (or makes it one again), where Minetest Game would keep a book with text titled "". A book with text and an empty book crafted together make a copy, and the original stays in the grid. What is written is kept in the item itself (Luanti's item metadata), so it goes wherever the book goes: chests, bookshelves, bones, dropped on the ground, other players.
 
 ## Mobs
@@ -173,13 +174,12 @@ Not part of Minetest Game, which has none, so they are off unless an admin or mo
 
 ## What doesn't (yet)
 
-Three of Minetest Game's 34 mods are still to come:
+Two of Minetest Game's 34 mods are still to come:
 
-- **Boats:** wooden boats to row across water.
 - **Carts:** minecarts, with rails (plain, powered and brake rails) to run them on.
 - **Creative mode:** the creative inventory, with every item to take, and digging without limits.
 
-(Boats and carts count as one mod each.)
+(Carts count as one mod.)
 
 Smaller gaps in what is here:
 

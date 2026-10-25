@@ -364,6 +364,8 @@ pub const ITEM_BINOCULARS: u16 = 0x1034;
 pub const ITEM_MAPPING_KIT: u16 = 0x1035;
 /// The tnt mod's TNT stick.
 pub const ITEM_TNT_STICK: u16 = 0x1036;
+/// The boats mod's boat (an item; placed on water, it is an entity).
+pub const ITEM_BOAT: u16 = 0x1037;
 pub const ITEM_DOOR_GLASS: u16 = 0x1006;
 /// minetest_game's buckets.
 pub const ITEM_BUCKET_EMPTY: u16 = 0x1007;
@@ -3626,6 +3628,15 @@ pub const CRAFTITEMS: &[CraftItem] = &[
         image: "tnt_tnt_stick.png",
         groups: &[("flammable", 5)],
     },
+    // The boats mod's boat (its model and pictures CC BY-SA 3.0, see
+    // media/LICENSE-boats.txt): placed on water, it is ridden (boats.rs).
+    CraftItem {
+        id: ITEM_BOAT,
+        name: "esp:boat",
+        description: "Boat",
+        image: "boats_inventory.png",
+        groups: &[("flammable", 2)],
+    },
     // minetest_game's lumps, crystals and ingots (craftitems.lua).
     CraftItem {
         id: ITEM_FLINT,
@@ -4641,7 +4652,7 @@ pub fn stack_max(id: u16) -> u16 {
 /// Whether an item points at liquids, as buckets do: then the client
 /// points at water rather than through it.
 fn liquids_pointable(id: u16) -> bool {
-    matches!(id, ITEM_BUCKET_EMPTY | ITEM_BUCKET_WATER | ITEM_BUCKET_LAVA)
+    matches!(id, ITEM_BUCKET_EMPTY | ITEM_BUCKET_WATER | ITEM_BUCKET_LAVA | ITEM_BOAT)
 }
 
 /// Whether an item can be placed as a node.
@@ -4952,6 +4963,9 @@ const EMBEDDED_MEDIA: &[(&str, &[u8])] = &[
     ("keys_key_skeleton.png", include_bytes!("../media/keys_key_skeleton.png")),
     ("screwdriver.png", include_bytes!("../media/screwdriver.png")),
     ("binoculars_binoculars.png", include_bytes!("../media/binoculars_binoculars.png")),
+    ("boats_boat.obj", include_bytes!("../media/boats_boat.obj")),
+    ("boats_inventory.png", include_bytes!("../media/boats_inventory.png")),
+    ("boats_wield.png", include_bytes!("../media/boats_wield.png")),
     ("map_mapping_kit.png", include_bytes!("../media/map_mapping_kit.png")),
     ("default_book.png", include_bytes!("../media/default_book.png")),
     ("default_book_written.png", include_bytes!("../media/default_book_written.png")),
@@ -5677,8 +5691,9 @@ pub fn itemdef_bytes() -> Vec<u8> {
             name: c.name,
             description: c.description,
             inventory_image: c.image,
-            wield_image: c.image,
-            wield_scale: [1.0, 1.0, 1.0],
+            // A boat has its own picture in the hand, twice the size.
+            wield_image: if c.id == ITEM_BOAT { "boats_wield.png" } else { c.image },
+            wield_scale: if c.id == ITEM_BOAT { [2.0, 2.0, 1.0] } else { [1.0, 1.0, 1.0] },
             place_prediction: "",
             tool_capabilities: Vec::new(),
             place_sound: ("", 1.0),

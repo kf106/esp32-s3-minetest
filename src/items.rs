@@ -170,6 +170,12 @@ impl Items {
         self.changed.get_or_insert_with(Instant::now);
     }
 
+    /// Where they are saved (the world's other entities, boats, are saved
+    /// beside them).
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Dropped> {
         self.list.iter()
     }

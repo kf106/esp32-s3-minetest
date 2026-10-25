@@ -1779,7 +1779,7 @@ fn node_range(min: f32, max: f32) -> (i32, i32) {
 /// Move a box (half width `w`, height `h`, its bottom `below` under `pos`)
 /// by `delta` along one axis, stopping against solid nodes. Returns
 /// whether it hit one.
-fn move_axis(pos: &mut [f32; 3], axis: usize, delta: f32, (w, h, below): (f32, f32, f32), t: &dyn Terrain) -> bool {
+pub(crate) fn move_axis(pos: &mut [f32; 3], axis: usize, delta: f32, (w, h, below): (f32, f32, f32), t: &dyn Terrain) -> bool {
     let old = pos[axis];
     let mut new = *pos;
     new[axis] += delta;

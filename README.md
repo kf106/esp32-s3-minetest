@@ -18,7 +18,7 @@ A standard, unmodified Luanti client connects to it over Wi-Fi as it would to an
 
 ## What it does
 
-It covers most of Minetest Game: 31 of its 34 mods, with boats, carts and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
+It covers most of Minetest Game: 32 of its 34 mods, with carts and creative mode still to come. The highlights (all of it is in [docs/features.md](docs/features.md)):
 
 - **[The world](docs/features.md#the-world):** Minetest Game's biomes, from desert and savanna to tundra and icesheet, with hills, mountains, rivers, lakes, caves, lava, ores and dungeons with loot chests; day and night, weather, and fire that spreads (within limits the board can manage).
 - **[Trees, plants and farming](docs/features.md#trees-plants-and-farming):** forests that grow back from saplings, flowers, bushes, kelp and corals, grass that spreads, wheat and cotton to farm, and butterflies and fireflies to catch.

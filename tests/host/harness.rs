@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-mod auth; mod beds; mod binoculars; mod board; mod books; mod bones; mod chest; mod clock; mod colours; mod content; mod crafting; mod craftguide; mod doors; mod env_sounds; mod dungeons; mod falling; mod fire; mod farming; mod fences; mod fasthash; mod font; mod furnace; mod indicator; mod insects; mod inventory; mod items; mod jsonstring; mod keys; mod liquids; mod messages; mod meta; mod mobs; mod nature; mod panes; mod plants; mod privs; mod player; mod protocol;
+mod auth; mod beds; mod binoculars; mod board; mod books; mod bones; mod chest; mod clock; mod colours; mod content; mod crafting; mod craftguide; mod doors; mod env_sounds; mod dungeons; mod falling; mod fire; mod farming; mod fences; mod fasthash; mod font; mod furnace; mod indicator; mod insects; mod boats; mod inventory; mod items; mod jsonstring; mod keys; mod liquids; mod messages; mod meta; mod mobs; mod nature; mod panes; mod plants; mod privs; mod player; mod protocol;
 mod screen; mod screwdriver; mod server; mod settings; mod sha1; mod sha256; mod skins; mod srp; mod stairs; mod status; mod storage; mod terrain; mod tnt; mod weather; mod wifi_config; mod world; mod zstd;
 
 use std::cell::RefCell;
@@ -922,7 +922,7 @@ fn main() {
     std::fs::create_dir_all(OUT).unwrap();
     if let Ok(port) = std::env::var("SERVE") { serve(&port); return; }
     if let Ok(path) = std::env::var("PLAYER_INIT") {
-        let d = messages::player_init_data(&messages::PlayerInit { name: "Steve", id: 2, pos_bs: [1.0, 2.0, 3.0], yaw: 45.0, anim: messages::Animation::new(messages::ANIM_STAND, 30.0), skin: "character.png", zoom_fov: 0.0 });
+        let d = messages::player_init_data(&messages::PlayerInit { name: "Steve", id: 2, pos_bs: [1.0, 2.0, 3.0], yaw: 45.0, anim: messages::Animation::new(messages::ANIM_STAND, 30.0), skin: "character.png", zoom_fov: 0.0, posture: messages::Posture::Stand, attached: None });
         std::fs::write(path, d).unwrap();
         return;
     }

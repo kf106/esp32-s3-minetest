@@ -57,6 +57,8 @@ mod fasthash;
 mod fences;
 #[path = "../../src/furnace.rs"]
 mod furnace;
+#[path = "../../src/boats.rs"]
+mod boats;
 #[path = "../../src/insects.rs"]
 mod insects;
 #[path = "../../src/inventory.rs"]

@@ -174,6 +174,13 @@ pub const RECIPES: &[Recipe] = &[
         output: ITEM_BINOCULARS,
         count: 1,
     },
+    // A boat: five planks in a U (boats mod).
+    Recipe {
+        width: 3,
+        pattern: &[E, E, E, G("wood"), E, G("wood"), G("wood"), G("wood"), G("wood")],
+        output: ITEM_BOAT,
+        count: 1,
+    },
     // map: a mapping kit.
     Recipe {
         width: 3,
@@ -401,6 +408,7 @@ pub fn burn_time(id: u16) -> f32 {
         DRY_SHRUB => 2.0,
         CONTENT_BOOKSHELF | VESSELS_SHELF => 30.0,
         ITEM_MAPPING_KIT => 5.0,
+        ITEM_BOAT => 20.0,
         TOOL_PICK_WOOD | TOOL_AXE_WOOD => 6.0,
         TOOL_SWORD_WOOD => 5.0,
         TOOL_SHOVEL_WOOD => 4.0,
@@ -961,6 +969,13 @@ mod tests {
         ]);
         assert_eq!(result(&kit), Some((ITEM_MAPPING_KIT, 1)));
         assert_eq!(burn_time(ITEM_MAPPING_KIT), 5.0);
+        // boat: five planks (any wood) in a U, in the lower or upper rows.
+        let (a, f) = (CONTENT_APPLE_WOOD, CONTENT_FIR_WOOD);
+        let low = [(3, a, 1), (5, a, 1), (6, a, 1), (7, f, 1), (8, a, 1)];
+        assert_eq!(result(&grid(&low)), Some((ITEM_BOAT, 1)));
+        let high = [(0, a, 1), (2, a, 1), (3, a, 1), (4, a, 1), (5, a, 1)];
+        assert_eq!(result(&grid(&high)), Some((ITEM_BOAT, 1)));
+        assert_eq!(burn_time(ITEM_BOAT), 20.0);
     }
 
     #[test]

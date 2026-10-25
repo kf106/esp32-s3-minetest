@@ -683,20 +683,22 @@ pub fn properties_message(p: &Props) -> Vec<u8> {
 /// constructor), but physical, with player_api's model wearing `skin` (a texture). For
 /// the local player the client also takes its collision box, eye height
 /// and zoom from these. Sent again when the player changes skin, and when
-/// they lie down in a bed or get up: player_api's "lay" animation has a
-/// low, wide box and eyes 0.3 above the ground.
-pub fn player_properties_message(skin: &str, lying: bool, zoom_fov: f32) -> Vec<u8> {
-    let (collisionbox, eye_height) = if lying {
-        ([-0.6, 0.0, -0.6, 0.6, 0.3, 0.6], 0.3)
-    } else {
-        ([-0.3, 0.0, -0.3, 0.3, 1.7, 0.3], 1.47) // player_api's "stand" box
+/// they lie down in a bed or sit in a boat, or get up: player_api's "lay"
+/// animation has a low, wide box and eyes 0.3 above the ground, "sit" a
+/// box a node high and eyes at 0.8.
+pub fn player_properties_message(skin: &str, posture: Posture, zoom_fov: f32) -> Vec<u8> {
+    let (collisionbox, eye_height) = match posture {
+        Posture::Lie => ([-0.6, 0.0, -0.6, 0.6, 0.3, 0.6], 0.3),
+        Posture::Sit => ([-0.3, 0.0, -0.3, 0.3, 1.0, 0.3], 0.8),
+        Posture::Stand => ([-0.3, 0.0, -0.3, 0.3, 1.7, 0.3], 1.47), // player_api's "stand" box
     };
+    let lying = posture != Posture::Stand;
     properties_message(&Props {
         hp_max: PLAYER_MAX_HP,
         // Solid to other players' clients, so players can't walk through
         // each other. (Luanti leaves players non-physical, so they can.)
         // Not while lying in bed, so a bed beside someone asleep can still
-        // be reached.
+        // be reached (nor sitting in a boat).
         physical: !lying,
         collisionbox,
         selectionbox: [-0.3, 0.0, -0.3, 0.3, 1.77, 0.3],
@@ -720,6 +722,15 @@ pub fn player_properties_message(skin: &str, lying: bool, zoom_fov: f32) -> Vec<
     })
 }
 
+/// How a player is: standing (or walking), lying in bed, or sitting in a
+/// boat (player_api's "lay" and "sit" animations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Posture {
+    Stand,
+    Lie,
+    Sit,
+}
+
 /// A frame range of character.b3d, as player_api defines them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Animation {
@@ -734,6 +745,7 @@ pub const ANIM_WALK: (f32, f32) = (168.0, 187.0);
 pub const ANIM_MINE: (f32, f32) = (189.0, 198.0);
 pub const ANIM_WALK_MINE: (f32, f32) = (200.0, 219.0);
 pub const ANIM_LAY: (f32, f32) = (162.0, 166.0);
+pub const ANIM_SIT: (f32, f32) = (81.0, 160.0);
 
 impl Animation {
     pub fn new(range: (f32, f32), fps: f32) -> Self {
@@ -790,6 +802,26 @@ pub fn build_hud_set_flags(flags: u32, mask: u32) -> Vec<u8> {
 pub fn armor_groups_message() -> Vec<u8> {
     let mut w = Writer::plain();
     w.u8(AO_CMD_UPDATE_ARMOR_GROUPS).u16(1).string16("fleshy").i16(100);
+    w.into_inner()
+}
+
+/// AO_CMD_ATTACH_TO: to object `parent` (no bone), `pos` from it in its
+/// own units, not turned, not shown to a local player in first person.
+pub fn attach_message(parent: u16, pos: [f32; 3]) -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_ATTACH_TO).i16(parent as i16).string16("");
+    for v in pos {
+        w.f32(v);
+    }
+    w.f32(0.0).f32(0.0).f32(0.0).u8(0);
+    w.into_inner()
+}
+
+/// AO_CMD_UPDATE_ARMOR_GROUPS {immortal = 1}: punches do it no harm (a
+/// boat's on_activate).
+pub fn immortal_message() -> Vec<u8> {
+    let mut w = Writer::plain();
+    w.u8(AO_CMD_UPDATE_ARMOR_GROUPS).u16(1).string16("immortal").i16(1);
     w.into_inner()
 }
 
@@ -863,10 +895,13 @@ pub struct PlayerInit<'a> {
     pub skin: &'a str,
     /// The zoom binoculars give (binoculars.rs).
     pub zoom_fov: f32,
+    pub posture: Posture,
+    /// What they are attached to (a boat), and where on it.
+    pub attached: Option<(u16, [f32; 3])>,
 }
 
 pub fn player_init_data(p: &PlayerInit) -> Vec<u8> {
-    let PlayerInit { name, id, pos_bs, yaw, anim, skin, zoom_fov } = *p;
+    let PlayerInit { name, id, pos_bs, yaw, anim, skin, zoom_fov, posture, attached } = *p;
     let mut w = Writer::plain();
     w.u8(1) // version
         .string16(name)
@@ -879,10 +914,10 @@ pub fn player_init_data(p: &PlayerInit) -> Vec<u8> {
         .u16(PLAYER_MAX_HP);
     // The same messages, in the same order, as PlayerSAO's init data.
     let messages = [
-        player_properties_message(skin, false, zoom_fov),
+        player_properties_message(skin, posture, zoom_fov),
         armor_groups_message(),
         set_animation_message(anim),
-        not_attached_message(),
+        attached.map_or_else(not_attached_message, |(parent, at)| attach_message(parent, at)),
         physics_override_message(false),
     ];
     w.u8(messages.len() as u8);
@@ -1851,7 +1886,8 @@ mod player_tests {
     #[test]
     fn players_are_solid_except_in_bed() {
         // AO_CMD_SET_PROPERTIES, version, hp_max (u16), then physical.
-        assert_eq!(player_properties_message("character.png", false, 0.0)[4], 1);
-        assert_eq!(player_properties_message("character.png", true, 0.0)[4], 0);
+        assert_eq!(player_properties_message("character.png", Posture::Stand, 0.0)[4], 1);
+        assert_eq!(player_properties_message("character.png", Posture::Lie, 0.0)[4], 0);
+        assert_eq!(player_properties_message("character.png", Posture::Sit, 0.0)[4], 0);
     }
 }

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
 
+use crate::boats;
 use crate::auth::{self, Account, AuthStore, NameError};
 use crate::content::{self, Media};
 use crate::messages::{self, *};
@@ -170,10 +171,10 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(30);
 /// docs/features.md. The PC build can take more (Setup::max_players).
 pub const MAX_PLAYERS: usize = 6;
 /// Peer ids: 0 and 1 are Luanti's "none" and the server. A player's object
-/// id is their peer id, so peer ids stay below the mobs' and dropped items'
-/// object ids (from mobs::FIRST_ID up).
+/// id is their peer id, so peer ids stay below the boats', mobs' and dropped
+/// items' object ids (from boats::FIRST_ID up).
 const FIRST_PEER_ID: u16 = 2;
-const LAST_PEER_ID: u16 = crate::mobs::FIRST_ID - 1;
+const LAST_PEER_ID: u16 = crate::boats::FIRST_ID - 1;
 
 /// The peer id for a new connection, as Luanti's Connection::createPeer
 /// picks it: the next one after the last given out that nobody is using,
@@ -354,6 +355,8 @@ struct Peer {
     guide: craftguide::Guide,
     /// The bed they lie in, if any.
     in_bed: Option<InBed>,
+    /// The boat they sit in, if any.
+    in_boat: Option<u16>,
     /// Already reported: nothing heard from them for LINK_QUIET, and none
     /// of our packets acknowledged for LINK_QUIET (see watch_links).
     quiet_reported: bool,
@@ -374,6 +377,17 @@ struct Peer {
 }
 
 impl Peer {
+    /// Lying in bed, sitting in a boat, or neither.
+    fn posture(&self) -> Posture {
+        if self.in_bed.is_some() {
+            Posture::Lie
+        } else if self.in_boat.is_some() {
+            Posture::Sit
+        } else {
+            Posture::Stand
+        }
+    }
+
     fn new(id: u16) -> Self {
         Self {
             id,
@@ -418,6 +432,7 @@ impl Peer {
             fire_sound: None,
             guide: craftguide::Guide::default(),
             in_bed: None,
+            in_boat: None,
             quiet_reported: false,
             unacked_reported: false,
             inventory_unsent: false,
@@ -523,6 +538,8 @@ pub struct Server {
     /// Dropped items, and when they were last moved on.
     items: Items,
     items_stepped: Instant,
+    /// Boats (boats.rs), saved beside the items.
+    boats: boats::Boats,
     /// Hostile mobs (mobs.rs), when on; when spawning was last tried.
     mobs: Mobs,
     mobs_spawned: Instant,
@@ -932,6 +949,7 @@ impl Server {
             builder,
             building: HashSet::new(),
             built: Default::default(),
+            boats: items.path().map_or_else(boats::Boats::default, |p| boats::Boats::open(p.with_file_name("boats.txt"))),
             items,
             clock,
             door_owners,
@@ -1652,6 +1670,11 @@ impl Server {
         peer.save(&self.players);
         peer.save_inventory(&self.inventories);
         info!("Peer {} ({}) {how}", peer.id, peer.display_name());
+        // Their boat is left empty (its on_detach_child).
+        if let Some(b) = peer.in_boat.and_then(|id| self.boats.get_mut(id)) {
+            b.driver = None;
+            b.auto = false;
+        }
         if peer.ready {
             self.remove_player_object(peer.id);
             self.event(format!("{} {event}", peer.display_name()));
@@ -1832,11 +1855,17 @@ impl Server {
             anim: peer.anim,
             skin: &self.skin_texture(&peer.skin),
             zoom_fov: peer.zoom_fov,
+            posture: peer.posture(),
+            attached: peer.in_boat.map(|b| (b, boats::SEAT)),
         });
 
         // The client's own object must be in its first object packet: from
         // then on it calls LocalPlayer::isDead(), which needs that object.
+        // Then the boats, before the players who may sit in them.
         let mut for_new = vec![(new_id, new_init.clone())];
+        for b in self.boats.iter() {
+            for_new.push((b.id, boats::init_data(b)));
+        }
         let mut others = Vec::new();
         for (addr, p) in &self.peers {
             if *addr != new && p.ready {
@@ -1848,6 +1877,8 @@ impl Server {
                     anim: p.anim,
                     skin: &self.skin_texture(&p.skin),
                     zoom_fov: p.zoom_fov,
+                    posture: p.posture(),
+                    attached: p.in_boat.map(|b| (b, boats::SEAT)),
                 })));
                 others.push(*addr);
             }
@@ -1938,8 +1969,10 @@ impl Server {
         // Walk, mine or stand, as player_api does from the pressed keys.
         // Animation changes go reliably on channel 0: if one were lost the
         // player would be stuck walking (or frozen) until the next change.
-        // Lying in bed, the animation stays (player_api's player_attached).
-        let anim = if peer.in_bed.is_some() { peer.anim } else { animation_for(&pp) };
+        // Lying in bed or sitting in a boat, the animation stays
+        // (player_api's player_attached).
+        let anim = if peer.in_bed.is_some() || peer.in_boat.is_some() { peer.anim } else { animation_for(&pp) };
+        let in_boat = peer.in_boat.is_some();
         if anim != peer.anim {
             peer.anim = anim;
             let packet = build_object_messages(&[(id, set_animation_message(anim))]);
@@ -1956,7 +1989,10 @@ impl Server {
         if active {
             self.wake();
         }
-        if !moved {
+        // In a boat, where they are is where the boat is: other clients
+        // put them there themselves (Luanti doesn't take an attached
+        // player's position either).
+        if !moved || in_boat {
             return;
         }
 
@@ -2072,6 +2108,14 @@ impl Server {
             return;
         }
         if let Pointed::Object(id) = msg.pointed {
+            if boats::is_boat_id(id) && !dead {
+                match msg.action {
+                    INTERACT_START_DIGGING => self.punch_boat(from, id, body),
+                    INTERACT_PLACE => self.board_boat(from, id, body),
+                    _ => {}
+                }
+                return;
+            }
             if msg.action == INTERACT_START_DIGGING && !dead {
                 if mobs::is_mob_id(id) {
                     self.punch_mob(from, id, msg.item as usize, body);
@@ -2398,6 +2442,13 @@ impl Server {
                         self.place_rooted(from, id, slot, under);
                     } else {
                         self.resend_node(from, under);
+                    }
+                    return;
+                }
+                // A boat goes on water (its on_place), and nowhere else.
+                if wielded.is_some_and(|s| slot < HOTBAR_SIZE && s.id == content::ITEM_BOAT) {
+                    if in_reach(under) {
+                        self.place_boat(from, slot, under, yaw);
                     }
                     return;
                 }
@@ -2732,7 +2783,7 @@ impl Server {
         self.send_command(from, 0, &build_hud_set_flags(0, HUD_FLAG_WIELDITEM_VISIBLE));
         let lay = build_object_messages(&[
             (id, set_animation_message(Animation::new(ANIM_LAY, 0.0))),
-            (id, player_properties_message(&texture, true, zoom)),
+            (id, player_properties_message(&texture, Posture::Lie, zoom)),
         ]);
         self.send_to_players(&lay);
     }
@@ -2764,7 +2815,7 @@ impl Server {
         self.send_command(from, 0, &build_object_messages(&[(id, physics_override_message(false))]));
         self.send_command(from, 0, &build_local_player_animations(true));
         self.send_command(from, 0, &build_hud_set_flags(HUD_FLAG_WIELDITEM_VISIBLE, HUD_FLAG_WIELDITEM_VISIBLE));
-        let up = build_object_messages(&[(id, set_animation_message(stand)), (id, player_properties_message(&texture, false, zoom))]);
+        let up = build_object_messages(&[(id, set_animation_message(stand)), (id, player_properties_message(&texture, Posture::Stand, zoom))]);
         self.send_to_players(&up);
         true
     }
@@ -4259,7 +4310,7 @@ impl Server {
             return;
         }
         peer.zoom_fov = zoom;
-        let (id, skin, lying) = (peer.id, peer.skin.clone(), peer.in_bed.is_some());
+        let (id, skin, lying) = (peer.id, peer.skin.clone(), peer.posture());
         info!("{}: zoom {zoom}", peer.display_name());
         let texture = self.skin_texture(&skin);
         let packet = build_object_messages(&[(id, player_properties_message(&texture, lying, zoom))]);
@@ -4695,7 +4746,7 @@ impl Server {
         let skin = self.skins.get(next);
         peer.skin = skin.key.clone();
         peer.save(&self.players);
-        let (id, name, texture, label, lying, zoom) = (peer.id, peer.display_name().to_string(), skin.texture.clone(), skin.label.clone(), peer.in_bed.is_some(), peer.zoom_fov);
+        let (id, name, texture, label, lying, zoom) = (peer.id, peer.display_name().to_string(), skin.texture.clone(), skin.label.clone(), peer.posture(), peer.zoom_fov);
         info!("{name} now wears the {label} skin");
         self.send_inventory_formspec(from);
         // Everyone (the player too, for the third-person view) redraws
@@ -4767,6 +4818,172 @@ impl Server {
             self.send_item_properties(id);
         }
         self.inventory_changed(from);
+    }
+
+    // -------------------------------------------------------------------
+    // Boats (boats.rs)
+    // -------------------------------------------------------------------
+
+    /// The boat item's on_place: pointed at water, a boat goes on it,
+    /// facing the way the player looks, and one boat leaves their hand.
+    fn place_boat(&mut self, from: SocketAddr, slot: usize, under: [i16; 3], look_yaw: f32) {
+        let water = (under[0] as i32, under[1] as i32, under[2] as i32);
+        if content::group_of(self.world.node(water), "water") == 0 {
+            self.send_inventory(from);
+            return;
+        }
+        let pos = [under[0] as f32, under[1] as f32 + 0.5, under[2] as f32];
+        let name = self.peers.get(&from).map(|p| p.display_name().to_string()).unwrap_or_default();
+        let Some(id) = self.boats.add(pos, look_yaw.to_radians()) else {
+            self.tell(from, "There are too many boats in the world already.");
+            self.send_inventory(from);
+            return;
+        };
+        info!("{name} put a boat on the water at {under:?} ({} boats)", self.boats.len());
+        if let Some(peer) = self.peers.get_mut(&from) {
+            peer.inventory.take_one(slot);
+        }
+        self.inventory_changed(from);
+        if let Some(b) = self.boats.get(id) {
+            let added = build_remove_add(&[], &[(id, boats::init_data(b))]);
+            self.send_to_players(&added);
+        }
+    }
+
+    /// Right-clicking a boat (its on_rightclick): the driver gets out; if
+    /// nobody is in it, the player gets in.
+    fn board_boat(&mut self, from: SocketAddr, id: u16, body: [f32; 3]) {
+        let Some(b) = self.boats.get(id) else {
+            return;
+        };
+        let near = (0..3).map(|i| (b.pos[i] - body[i]).powi(2)).sum::<f32>().sqrt() <= MAX_INTERACT_DISTANCE + 1.0;
+        let (driver, boat_yaw) = (b.driver, b.yaw);
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
+        if driver == Some(peer.id) {
+            self.leave_boat(from, true);
+            return;
+        }
+        if driver.is_some() || !near || peer.in_bed.is_some() || peer.in_boat.is_some() {
+            return;
+        }
+        let sit = Animation::new(ANIM_SIT, ANIM_FPS);
+        peer.in_boat = Some(id);
+        peer.anim = sit;
+        peer.yaw = boat_yaw.to_degrees();
+        let (pid, name, pitch, pos_bs, skin, zoom) = (peer.id, peer.display_name().to_string(), peer.pitch, peer.pos_bs, peer.skin.clone(), peer.zoom_fov);
+        if let Some(b) = self.boats.get_mut(id) {
+            b.driver = Some(pid);
+        }
+        info!("{name} gets into boat {id}");
+        let texture = self.skin_texture(&skin);
+        // Attached, sitting, looking the way the boat faces.
+        self.send_to_players(&build_object_messages(&[
+            (pid, attach_message(id, boats::SEAT)),
+            (pid, set_animation_message(sit)),
+            (pid, player_properties_message(&texture, Posture::Sit, zoom)),
+        ]));
+        self.send_command(from, 0, &build_local_player_animations(false));
+        self.send_command(from, 0, &build_move_player(pos_bs, pitch, boat_yaw.to_degrees()));
+    }
+
+    /// Out of the boat (right-clicked again, or punched): standing, and,
+    /// if `step_off`, a little above where it is. (Dead, or gone, they
+    /// stay where they are.) Returns whether they were in one.
+    fn leave_boat(&mut self, from: SocketAddr, step_off: bool) -> bool {
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return false;
+        };
+        let Some(id) = peer.in_boat.take() else {
+            return false;
+        };
+        let stand = Animation::new(ANIM_STAND, ANIM_FPS);
+        peer.anim = stand;
+        let (pid, name, pitch, yaw, skin, zoom) = (peer.id, peer.display_name().to_string(), peer.pitch, peer.yaw, peer.skin.clone(), peer.zoom_fov);
+        let at = self.boats.get_mut(id).map(|b| {
+            b.driver = None;
+            b.auto = false;
+            b.pos_bs()
+        });
+        info!("{name} gets out of boat {id}");
+        let texture = self.skin_texture(&skin);
+        self.send_to_players(&build_object_messages(&[
+            (pid, not_attached_message()),
+            (pid, set_animation_message(stand)),
+            (pid, player_properties_message(&texture, Posture::Stand, zoom)),
+        ]));
+        self.send_command(from, 0, &build_local_player_animations(true));
+        if let (true, Some(at)) = (step_off, at) {
+            let pos_bs = [at[0], at[1] + 2.0, at[2]];
+            if let Some(peer) = self.peers.get_mut(&from) {
+                peer.pos_bs = pos_bs;
+            }
+            self.send_command(from, 0, &build_move_player(pos_bs, pitch, yaw));
+            self.announce_position(from);
+        }
+        true
+    }
+
+    /// Punching a boat (its on_punch): its driver punching it gets out;
+    /// with nobody in it, the boat goes into the puncher's inventory (or,
+    /// if that is full, is dropped where it was).
+    fn punch_boat(&mut self, from: SocketAddr, id: u16, body: [f32; 3]) {
+        let Some(b) = self.boats.get(id) else {
+            return;
+        };
+        let near = (0..3).map(|i| (b.pos[i] - body[i]).powi(2)).sum::<f32>().sqrt() <= MAX_INTERACT_DISTANCE + 1.0;
+        let (driver, pos) = (b.driver, b.pos);
+        let Some(peer) = self.peers.get(&from) else {
+            return;
+        };
+        if driver == Some(peer.id) {
+            self.leave_boat(from, false);
+        } else if driver.is_some() || !near {
+            return;
+        }
+        self.boats.remove(id);
+        self.send_to_players(&build_remove_add(&[id], &[]));
+        let Some(peer) = self.peers.get_mut(&from) else {
+            return;
+        };
+        let name = peer.display_name().to_string();
+        let left = peer.inventory.add(Stack::new(content::ITEM_BOAT, 1));
+        info!("{name} took boat {id} ({} boats left)", self.boats.len());
+        if left > 0 {
+            self.spawn_item(Stack::new(content::ITEM_BOAT, left), (pos, [0.0; 3]));
+        }
+        self.inventory_changed(from);
+    }
+
+    /// Move the boats on, steered by their drivers' keys, and tell clients.
+    fn step_boats(&mut self, dt: f32) {
+        if self.boats.len() == 0 {
+            return;
+        }
+        let keys: Vec<(u16, u32)> = self.peers.values().filter(|p| p.in_boat.is_some()).map(|p| (p.id, p.keys)).collect();
+        let controls = |driver: u16| keys.iter().find(|(id, _)| *id == driver).map(|&(_, k)| boats::Controls::from_keys(k));
+        let terrain = MobTerrain(&self.world);
+        let events = self.boats.step(dt, &terrain, &controls);
+        let mut moved = Vec::new();
+        for e in events {
+            match e {
+                boats::Event::Moved(id) => {
+                    if let Some(b) = self.boats.get(id) {
+                        moved.push((id, boats::position(b)));
+                    }
+                }
+                boats::Event::Cruise { driver, on } => {
+                    let addr = self.peers.iter().find(|(_, p)| p.id == driver).map(|(a, _)| *a);
+                    if let Some(addr) = addr {
+                        self.tell(addr, if on { "Boat cruise mode on" } else { "Boat cruise mode off" });
+                    }
+                }
+            }
+        }
+        if !moved.is_empty() {
+            self.send_to_players(&build_object_messages(&moved));
+        }
     }
 
     /// The node at `node` changed: items on it may fall.
@@ -5085,7 +5302,11 @@ impl Server {
                         continue;
                     };
                     self.hurt(addr, damage, kills);
-                    self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
+                    // No knockback in a boat (player_api's
+                    // calculate_knockback for attached players).
+                    if self.peers.get(&addr).is_some_and(|p| p.in_boat.is_none()) {
+                        self.send_command(addr, 0, &build_player_speed(push.map(|v| v * 10.0)));
+                    }
                 }
             }
         }
@@ -5547,8 +5768,10 @@ impl Server {
         if hp == 0 {
             info!("{name} died");
             self.leave_bones(from);
-            // Dead, they get up where they lie (beds' on_dieplayer).
+            // Dead, they get up where they lie (beds' on_dieplayer), and
+            // out of any boat (Luanti detaches the dead).
             self.get_up(from, false);
+            self.leave_boat(from, false);
             self.event(format!("{name} {death}"));
             self.send_command(from, 0, &build_deathscreen());
             if let Some(peer) = self.peers.get_mut(&from) {
@@ -6776,6 +6999,7 @@ impl Server {
             self.step_items(dt);
             self.step_falling(dt);
             self.step_mobs(dt);
+            self.step_boats(dt);
         }
         if now.duration_since(self.mobs_spawned) >= mobs::SPAWN_EVERY {
             self.mobs_spawned = now;
@@ -6783,6 +7007,9 @@ impl Server {
         }
         if self.items.save_if_due() {
             self.note("items saved", 0);
+        }
+        if self.boats.save_if_due() {
+            self.note("boats saved", 0);
         }
         if self.clock.save_if_due() {
             self.note("time saved", 0);
@@ -7217,7 +7444,7 @@ mod tests {
         assert_eq!(free_peer_id(5, &busy), Some(7));
         assert_eq!(free_peer_id(LAST_PEER_ID, &[LAST_PEER_ID].into()), Some(FIRST_PEER_ID));
         assert_eq!(free_peer_id(LAST_PEER_ID + 1, &none), Some(LAST_PEER_ID));
-        assert!(LAST_PEER_ID < crate::mobs::FIRST_ID);
+        assert!(LAST_PEER_ID < crate::boats::FIRST_ID);
         // A long run of connections, each gone again: ids stay in range.
         let mut next = FIRST_PEER_ID;
         for _ in 0..100_000 {

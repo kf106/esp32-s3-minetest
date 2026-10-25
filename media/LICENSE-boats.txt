@@ -1,0 +1,20 @@
+Boats: the model and textures from Minetest Game's boats mod
+(https://github.com/luanti-org/minetest_game, mods/boats), unchanged,
+under their original names:
+
+  boats_boat.obj, boats_inventory.png, boats_wield.png
+
+Credits, from that mod's README.md and license.txt:
+
+Textures: Zeg9 (CC BY-SA 3.0)
+Model: thetoon and Zeg9 (CC BY-SA 3.0),
+modified by PavelS (SokolovPavel) (CC BY-SA 3.0),
+modified by sofar (CC BY-SA 3.0)
+
+Copyright (C) 2012-2016 Zeg9
+Copyright (C) 2012-2016 thetoon
+Copyright (C) 2012-2016 PavelS (SokolovPavel)
+Copyright (C) 2016 sofar (sofar@foo-projects.org)
+
+Licensed under Attribution-ShareAlike 3.0 Unported (CC BY-SA 3.0):
+https://creativecommons.org/licenses/by-sa/3.0/
