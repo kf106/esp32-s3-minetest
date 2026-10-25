@@ -202,8 +202,15 @@ impl Items {
         } else {
             None
         };
-        let id = self.next_id;
-        self.next_id = if self.next_id == u16::MAX { FIRST_ID } else { self.next_id + 1 };
+        // The next id that isn't still on the ground (going round after
+        // u16::MAX; there are at most MAX_ITEMS, so one is always free).
+        let id = loop {
+            let id = self.next_id;
+            self.next_id = if id == u16::MAX { FIRST_ID } else { id + 1 };
+            if self.get(id).is_none() {
+                break id;
+            }
+        };
         let (mut pos, vel) = motion;
         lift_out(&mut pos, item_size(stack.count), solid);
         let (item, count, wear, meta) = (stack.id, stack.count, stack.wear, stack.meta);

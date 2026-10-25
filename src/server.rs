@@ -169,6 +169,19 @@ const SAVE_INTERVAL: Duration = Duration::from_secs(30);
 /// max_users, default 15 there). More would overload the ESP32: see
 /// docs/features.md. The PC build can take more (Setup::max_players).
 pub const MAX_PLAYERS: usize = 6;
+/// Peer ids: 0 and 1 are Luanti's "none" and the server. A player's object
+/// id is their peer id, so peer ids stay below the mobs' and dropped items'
+/// object ids (from mobs::FIRST_ID up).
+const FIRST_PEER_ID: u16 = 2;
+const LAST_PEER_ID: u16 = crate::mobs::FIRST_ID - 1;
+
+/// The peer id for a new connection, as Luanti's Connection::createPeer
+/// picks it: the next one after the last given out that nobody is using,
+/// going round to the start after the last. None if all are in use.
+fn free_peer_id(next: u16, in_use: &HashSet<u16>) -> Option<u16> {
+    let next = next.clamp(FIRST_PEER_ID, LAST_PEER_ID);
+    (next..=LAST_PEER_ID).chain(FIRST_PEER_ID..next).find(|id| !in_use.contains(id))
+}
 /// Luanti's chat limits (chat_message_max_size, and
 /// chat_message_limit_per_10sec).
 const CHAT_MAX_CHARS: usize = 500;
@@ -911,7 +924,7 @@ impl Server {
                 media,
             },
             peers: HashMap::new(),
-            next_peer_id: 2,
+            next_peer_id: FIRST_PEER_ID,
             block_turn: 0,
             stale_told: HashMap::new(),
             srp_results,
@@ -6545,9 +6558,12 @@ impl Server {
     // -----------------------------------------------------------------------
 
     fn add_peer(&mut self, addr: SocketAddr) {
-        let id = self.next_peer_id;
-        let next = self.next_peer_id.wrapping_add(1);
-        self.next_peer_id = if next < 2 { 2 } else { next };
+        let in_use: HashSet<u16> = self.peers.values().map(|p| p.id).collect();
+        let Some(id) = free_peer_id(self.next_peer_id, &in_use) else {
+            warn!("No peer id free for {addr} ({} peers); ignored", self.peers.len());
+            return;
+        };
+        self.next_peer_id = if id >= LAST_PEER_ID { FIRST_PEER_ID } else { id + 1 };
 
         self.peers.insert(addr, Peer::new(id));
         info!("New peer {id} from {addr}");
@@ -7185,4 +7201,31 @@ fn test_send_failure() -> bool {
 fn node_to_block(pos: [f32; 3]) -> BlockPos {
     let b = |v: f32| world::block_of(v.round() as i32);
     (b(pos[0]), b(pos[1]), b(pos[2]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_ids() {
+        let none = HashSet::new();
+        assert_eq!(free_peer_id(FIRST_PEER_ID, &none), Some(2));
+        // In use ones are skipped; past the last it goes round to the start,
+        // never into the mobs' and items' object ids.
+        let busy: HashSet<u16> = [5, 6].into();
+        assert_eq!(free_peer_id(5, &busy), Some(7));
+        assert_eq!(free_peer_id(LAST_PEER_ID, &[LAST_PEER_ID].into()), Some(FIRST_PEER_ID));
+        assert_eq!(free_peer_id(LAST_PEER_ID + 1, &none), Some(LAST_PEER_ID));
+        assert!(LAST_PEER_ID < crate::mobs::FIRST_ID);
+        // A long run of connections, each gone again: ids stay in range.
+        let mut next = FIRST_PEER_ID;
+        for _ in 0..100_000 {
+            let id = free_peer_id(next, &none).unwrap();
+            assert!((FIRST_PEER_ID..=LAST_PEER_ID).contains(&id));
+            next = if id >= LAST_PEER_ID { FIRST_PEER_ID } else { id + 1 };
+        }
+        let all: HashSet<u16> = (FIRST_PEER_ID..=LAST_PEER_ID).collect();
+        assert_eq!(free_peer_id(9, &all), None);
+    }
 }

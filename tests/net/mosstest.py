@@ -24,21 +24,27 @@ while time.time() < end and not any(struct.unpack_from(">hhh", m, 2) == want for
 x, y, z = water
 # Cobblestone and a cobblestone stair placed into the water; stone too.
 spots = {(x, y, z): 0, (x + 2, y, z): 1, (x + 4, y, z): 2}
+# Every node change, in order: moss can grow on the first one placed while
+# the others are still being placed, so none may be dropped.
+changes = []
+def collect(secs, until):
+    end = time.time() + secs
+    while time.time() < end and not until():
+        c.pump(0.05)
+        changes.extend((struct.unpack_from(">hhh", m, 2), (u16(m, 8), m[11])) for m in c.take(0x21))
 placed = {}
 for spot, slot in spots.items():
-    c.cmds.clear(); interact(c, 3, slot, (spot[0], y - 1, spot[2]), spot)
-    m = c.wait_for(0x21, 5, cond=lambda m: struct.unpack_from(">hhh", m, 2) == spot)
-    placed[spot] = (u16(m, 8), m[11]); print("placed", u16(m, 8), "param2", m[11], "at", spot)
+    interact(c, 3, slot, (spot[0], y - 1, spot[2]), spot)
+    collect(5, lambda: any(p == spot for p, _ in changes))
+    placed[spot] = next(n for p, n in changes if p == spot); print("placed", *placed[spot], "at", spot)
 assert placed[(x, y, z)][0] == COBBLE and placed[(x + 2, y, z)][0] == STAIR_COBBLE
 # Moss grows on the cobblestone and the stair (which keeps its turn), not
-# on the stone.
-grown = {}
-end = time.time() + 15
-while time.time() < end and len(grown) < 2:
-    c.pump(0.2)
-    for m in c.take(0x21):
-        grown[struct.unpack_from(">hhh", m, 2)] = (u16(m, 8), m[11])
-print("grown:", grown)
+# on the stone: what each became after it was placed.
+def changed():
+    return {p: n for p, n in changes if p in placed and n != placed[p]}
+collect(15, lambda: len(changed()) >= 2)
+grown = changed()
+print("grown:", grown, flush=True)
 assert grown.get((x, y, z), (0,))[0] == MOSSY
 assert grown.get((x + 2, y, z)) == (STAIR_MOSSY, placed[(x + 2, y, z)][1])
 assert (x + 4, y, z) not in grown
