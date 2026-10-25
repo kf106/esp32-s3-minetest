@@ -45,4 +45,10 @@ assert SAVANNA not in (DIRT, GRASS)
 c.cmds.clear(); interact(c, 3, 2, (8, 3, 14), (8, 4, 14))
 assert becomes(c, (8, 4, 14)) == DIRT
 assert becomes(c, (8, 4, 14)) == SAVANNA; print("and spread to the dirt beside it")
+# Stone placed pointing at the savanna grass goes in its place (as
+# builtin's item_place_node), not above it; covered, the dirt dies back.
+c.cmds.clear(); interact(c, 3, 1, (8, 5, 13), (8, 6, 13))
+STONE = becomes(c, (8, 5, 13)); print("the grass became", STONE)
+assert becomes(c, (8, 4, 13)) == DIRT; print("and under it, dirt again")
+c.pump(1); assert not any(struct.unpack_from(">hhh", m, 2) == (8, 6, 13) for m in c.take(0x21)), "placed above the grass"
 c.raw(0, b"\x00\x03"); time.sleep(0.3); print("TURF OK")

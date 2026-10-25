@@ -2469,10 +2469,6 @@ impl Server {
                     return;
                 };
                 let id = stack.id;
-                // Air, water, or an apple mark (buildable_to: placing
-                // replaces it).
-                let target = self.world.node(node_pos(above));
-                let free = content::buildable_to(target);
                 let support = self.world.node(node_pos(under));
                 // A slab on the open face of the same kind of slab makes a
                 // full block where that slab was. The client predicted a
@@ -2493,6 +2489,20 @@ impl Server {
                     self.resend_node(from, above);
                     return;
                 }
+                // Pointed at something placing replaces (tall grass, a
+                // flower, a snow layer), the node goes in its place, as
+                // builtin's item_place_node does and the client predicts;
+                // it then stands on what is under that.
+                let (under, above) = if content::buildable_to(support) {
+                    ([under[0], under[1] - 1, under[2]], under)
+                } else {
+                    (under, above)
+                };
+                // Where it goes must be air, water, or the like
+                // (buildable_to: placing replaces it).
+                let target = self.world.node(node_pos(above));
+                let free = content::buildable_to(target);
+                let support = self.world.node(node_pos(under));
                 // A torch hangs on something solid (the client checks the
                 // same); anything else just needs something to build on.
                 let torch = content::is_torch(id);
