@@ -33,6 +33,8 @@ mod chest;
 mod clock;
 #[path = "../../src/colours.rs"]
 mod colours;
+#[path = "../../src/config_page.rs"]
+mod config_page;
 #[path = "../../src/content.rs"]
 mod content;
 #[path = "../../src/crafting.rs"]
@@ -149,6 +151,10 @@ Usage: minetest-server [options]
                       (default: minetest-data)
   --max-players <n>   players in the game at once (default 15)
   --log <level>       error, warn, info or debug (default info)
+  --config-page <n>   serve the board's hotspot settings page on this TCP
+                      port, editing wifi.txt, motd.txt and
+                      world/settings.txt in the data folder; saving stops
+                      the server (for testing the page)
   --help              this
 ";
 
@@ -158,10 +164,11 @@ struct Options {
     data: PathBuf,
     max_players: usize,
     log: log::LevelFilter,
+    config_page: Option<u16>,
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { port: 30000, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info };
+    let mut o = Options { port: 30000, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info, config_page: None };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or(format!("{arg} needs a value"));
@@ -170,6 +177,7 @@ fn options() -> Result<Options, String> {
             "--bind" => o.bind = value()?,
             "--data" => o.data = value()?.into(),
             "--max-players" => o.max_players = value()?.parse().map_err(|_| "--max-players needs a number")?,
+            "--config-page" => o.config_page = Some(value()?.parse().map_err(|_| "--config-page needs a port number")?),
             "--log" => o.log = value()?.parse().map_err(|_| "--log needs error, warn, info or debug")?,
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
@@ -232,6 +240,15 @@ fn run(o: &Options) -> std::io::Result<()> {
         status: status::Status::new(address.clone()),
         max_players: o.max_players,
     };
+    if let Some(port) = o.config_page {
+        let files = config_page::Files {
+            wifi: data.join("wifi.txt"),
+            motd: data.join("motd.txt"),
+            settings: data.join("world/settings.txt"),
+            hotspot_next: data.join("boot-hotspot"),
+        };
+        config_page::start(port, files)?;
+    }
     let mut server = server::Server::new(setup);
     // (Board-only: the screen's view of the server, and SD card or flash.)
     let _ = (server.status_data_addr(), status::problems, status::set_on_flash);

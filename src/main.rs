@@ -7,6 +7,7 @@ mod bones;
 mod chest;
 mod clock;
 mod colours;
+mod config_page;
 mod content;
 mod crafting;
 mod craftguide;
@@ -78,6 +79,8 @@ const MOUNT: &str = "/sd";
 const WIFI_FILE: &str = "/sd/wifi.txt";
 /// Which built-in network was last written to WIFI_FILE.
 const WIFI_WRITTEN: &str = "/sd/wifi-written";
+/// Left by the settings page to restart on the hotspot (config_page.rs).
+const HOTSPOT_NEXT: &str = "/sd/boot-hotspot";
 /// How long to wait before looking for known networks again.
 const WIFI_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 /// How often to check that the Wi-Fi connection is still there.
@@ -204,7 +207,14 @@ fn main() -> anyhow::Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
     // Kept until the server stops: dropping it would switch the hotspot off.
     let mut _hotspot_wifi = None;
-    let boot = boot_choice(&status);
+    // Restarted by the settings page, which asked for the hotspot again:
+    // no BOOT window. Otherwise BOOT decides.
+    let boot = if config_page::take_hotspot_marker(std::path::Path::new(HOTSPOT_NEXT)) {
+        info!("Back on the hotspot, as the settings page asked");
+        Boot::Hotspot
+    } else {
+        boot_choice(&status)
+    };
     if boot == Boot::Drive {
         // The server's own use of the files stops first.
         drop(sd);
@@ -283,6 +293,18 @@ fn main() -> anyhow::Result<()> {
     // way into Server::new (see server::Setup).
     if server.status_data_addr() != sent {
         log::error!("Server was built with a corrupted status pointer; expect a crash");
+    }
+    // The settings page, on the hotspot only (see config_page.rs).
+    if boot == Boot::Hotspot {
+        let files = config_page::Files {
+            wifi: WIFI_FILE.into(),
+            motd: format!("{MOUNT}/motd.txt").into(),
+            settings: format!("{MOUNT}/world/settings.txt").into(),
+            hotspot_next: HOTSPOT_NEXT.into(),
+        };
+        if let Err(e) = config_page::start(config_page::PORT, files) {
+            log::warn!("No settings page: {e}");
+        }
     }
     log_heap("server ready");
     info!("Luanti server listening on {ip}:{PORT}");

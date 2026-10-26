@@ -36,7 +36,7 @@ src/boats.rs       boats: floating, steering, saving
 src/carts.rs       rails and carts: following the rails, junctions, pushing, saving
 src/creative.rs    creative mode: the creative inventory, the creative hand, /mode
 src/tnt.rs         TNT and gunpowder, and blasts
-src/settings.rs    the world's settings: fire, TNT and mobs on or off
+src/settings.rs    the world's settings: fire, TNT, mobs and creative mode on or off
 src/mobs.rs        hostile mobs: the Mossling, the Wisp and the Hexer
 src/farming.rs     farming: soil, seeds, crops, hoes
 src/beds.rs        beds, sleeping and respawn points
@@ -54,6 +54,7 @@ src/auth.rs        accounts; src/srp.rs, sha256.rs, sha1.rs: login crypto
 src/zstd.rs        a small zstd compressor for map blocks
 src/lcd.rs, screen.rs, font.rs, status.rs   the status display
 src/storage.rs     safe file writes on FAT
+src/config_page.rs the hotspot's settings page (a small HTTP server; saving restarts the server)
 media/             built-in textures and models
 partitions.csv     the flash layout: firmware, and room for the game without an SD card
 tools/loadtest.py  bot players for load testing (see below)

@@ -209,6 +209,41 @@ def run_pc(program, port):
         server.wait()
 
 
+def run_config(program, port, http_port):
+    """The settings page (config_page.rs) on the PC build: configtest.py
+    saves new settings, and the server must then stop by itself."""
+    data = WORK / "out" / "configdata"
+    shutil.rmtree(data, ignore_errors=True)
+    data.mkdir(parents=True)
+    server = subprocess.Popen([str(program), "--port", str(port), "--bind", "127.0.0.1", "--data", str(data),
+                               "--config-page", str(http_port)], stdout=subprocess.DEVNULL, stderr=open(WORK / "out" / "config-server.log", "w"))
+    try:
+        time.sleep(1.5)
+        t = time.time()
+        r = subprocess.run([sys.executable, str(NET / "configtest.py"), str(port), str(http_port), str(data), str(NET / "netclient.py")],
+                           cwd=NET, capture_output=True, text=True, timeout=120)
+        out = (r.stdout + r.stderr).strip().splitlines()
+        ok = r.returncode == 0 and out and out[-1].endswith("OK")
+        # Saving stops the PC build (the board restarts).
+        try:
+            code = server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            code = None
+        if ok and code != 0:
+            ok = False
+            out.append(f"the server didn't stop after saving (exit code {code})")
+        print(f"  {'pass' if ok else 'FAIL'}  {'config':<8} {time.time() - t:5.0f} s  {(out or [''])[-1][:90]}", flush=True)
+        if not ok:
+            print("\n".join("        " + l for l in out[-15:]))
+        return ok
+    except subprocess.TimeoutExpired:
+        print("  FAIL  config   timed out")
+        return False
+    finally:
+        server.kill()
+        server.wait()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("only", nargs="*", help="network tests to run (default: all)")
@@ -252,6 +287,7 @@ def main():
             results.append((name, run_network(name, env, args, night, FIRST_PORT + i, binary, plants)))
         if pc is not None:
             results.append(("pc", run_pc(pc, FIRST_PORT - 1)))
+            results.append(("config", run_config(pc, FIRST_PORT - 2, FIRST_PORT - 3)))
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} of {len(results)} passed" + (f"; failed: {', '.join(failed)}" if failed else ""))
     return 1 if failed else 0

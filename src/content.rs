@@ -6509,6 +6509,13 @@ pub struct Media {
     files: Vec<MediaFile>,
 }
 
+/// A texture compiled into the firmware, by file name (the settings page
+/// draws itself with them: config_page.rs). In flash, so any thread may
+/// use it.
+pub fn embedded(name: &str) -> Option<&'static [u8]> {
+    EMBEDDED_MEDIA.iter().find(|(n, _)| *n == name).map(|(_, data)| *data)
+}
+
 impl Media {
     /// Built-in textures, plus (and overridden by) any files in `dir`.
     pub fn load(dir: &str) -> Self {

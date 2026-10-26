@@ -21,6 +21,7 @@ minetest-server [--port 30000] [--bind 0.0.0.0] [--data minetest-data]
 - `--max-players` defaults to 15, Luanti's own default; a PC has the power the board lacks.
 - It keeps much larger caches than the board (up to about 60 MB), so players returning to a place find it already worked out. Built for a 32-bit machine (a router, say), or with `MINETEST_SMALL_CACHES=1` set while building, it keeps the board's small ones.
 - `--log` sets how much goes to the log, on stderr: `error`, `warn`, `info` (the default) or `debug`.
+- `--config-page <port>` serves the board's hotspot settings page (see [setup.md](setup.md#the-settings-page)) on that TCP port, editing `wifi.txt`, `motd.txt` and `world/settings.txt` in the data folder. Saving stops the server rather than restarting it. It is there for the tests; on a PC, editing the files is simpler.
 
 Like the board, it saves as it goes (world changes every second, inventories within 5 seconds), so stopping it with Ctrl+C loses at most that much. As on the board, the first player to log in becomes the administrator.
 

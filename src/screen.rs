@@ -592,7 +592,9 @@ fn render_join(f: &mut Frame, st: &Status, hotspot: &Hotspot) {
     // The address, with its label if both fit above the page dots.
     if y + 3 + 2 * line <= HEIGHT - 6 {
         y += 3;
-        f.text(&label, text_x, y, "Then in Luanti");
+        // The same address in a browser opens the settings page
+        // (config_page.rs).
+        f.text(&label, text_x, y, "Luanti or browser");
         y += line;
     }
     f.text(&Pen::new(&SMALL, GOOD, BACKGROUND, right), text_x, y, &hotspot.ip);

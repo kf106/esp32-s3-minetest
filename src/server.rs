@@ -1899,6 +1899,39 @@ impl Server {
         self.refresh_players();
     }
 
+    /// The settings page saved new settings (config_page.rs): tell the
+    /// players (their clients offer to reconnect), save everything, and
+    /// restart, so the new files are read. The PC build stops instead.
+    fn restart_for_settings(&mut self) -> ! {
+        info!("Restarting for the new settings");
+        let notice = build_access_denied(AccessDenied::Shutdown, "The server is restarting with new settings.", true);
+        let addrs: Vec<SocketAddr> = self.peers.keys().copied().collect();
+        for &addr in &addrs {
+            self.send_command(addr, 0, &notice);
+        }
+        for addr in addrs {
+            self.remove_peer(addr, "disconnected for the restart", "left");
+        }
+        self.world.flush_log();
+        self.items.save();
+        self.boats.save();
+        self.carts.save();
+        self.clock.save();
+        self.furnaces.save();
+        self.chests.save();
+        // Time for the notices to go out.
+        std::thread::sleep(Duration::from_millis(300));
+        #[cfg(target_os = "espidf")]
+        unsafe {
+            esp_idf_svc::sys::esp_restart()
+        }
+        #[cfg(not(target_os = "espidf"))]
+        {
+            info!("Stopped for the new settings: start the server again to use them");
+            std::process::exit(0)
+        }
+    }
+
     fn deny(&mut self, addr: SocketAddr, reason: AccessDenied, custom: &str) {
         info!("Denying access to {addr}: {reason:?} {custom}");
         let pkt = build_access_denied(reason, custom, false);
@@ -7809,6 +7842,9 @@ impl Server {
     /// Periodic housekeeping: drop silent peers, resend unacknowledged
     /// packets, send map blocks.
     fn tick(&mut self) {
+        if crate::config_page::restart_requested() {
+            self.restart_for_settings();
+        }
         let now = Instant::now();
         timed!(self, "finish_srp", self.finish_srp());
         timed!(self, "send_blocks", self.send_blocks());

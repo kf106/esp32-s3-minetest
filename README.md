@@ -1,4 +1,4 @@
-# esp32-s3-minetest
+# Minetest on a Stick
 
 **Minetest on a $12 stick:** Minetest Game, rebuilt in Rust, running as a [Luanti](https://www.luanti.org/)-compatible server on a $12 ESP32-S3 board the size of a slightly oversized USB stick.
 
@@ -48,7 +48,7 @@ You need a [supported board](docs/hardware.md) (the Waveshare ESP32-S3-LCD-1.47,
    ```
 3. In Luanti, open **Join Game**, enter the address the board's screen shows, port 30000, and pick a name and password. The first player to log in becomes the administrator, so make that you.
 
-No Wi-Fi to join? Hold BOOT when the screen asks, just after switching on, and the board makes [its own hotspot](docs/setup.md#its-own-hotspot).
+No Wi-Fi to join? Hold BOOT when the screen asks, just after switching on, and the board makes [its own hotspot](docs/setup.md#its-own-hotspot). On the hotspot, a browser at 192.168.4.1 opens [a settings page](docs/setup.md#the-settings-page) for the Wi-Fi networks, the game rules and the welcome message.
 
 ## On a PC or VPS
 
@@ -66,7 +66,7 @@ See [docs/pc.md](docs/pc.md) for the options and running it as a service.
 - [Features](docs/features.md): everything the server does, and what it doesn't yet.
 - [Hardware](docs/hardware.md): the boards, their pins, and adding another.
 - [Building and flashing](docs/building.md): the toolchain, configuration, and build options (starting afresh, the test kit).
-- [Setting up and connecting](docs/setup.md): the SD card or flash, Wi-Fi networks, the hotspot, the welcome message, extra media and skins.
+- [Setting up and connecting](docs/setup.md): the SD card or flash, Wi-Fi networks, the hotspot and its settings page, the welcome message, extra media and skins.
 - [Running on a PC or VPS](docs/pc.md)
 - [Administrator and privileges](docs/admin.md): the chat commands.
 - [Development](docs/development.md): the project layout, testing, load testing and notes for hackers. The tests have their own [README](tests/README.md).

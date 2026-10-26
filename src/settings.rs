@@ -94,6 +94,13 @@ impl Settings {
         self.save();
     }
 
+    /// Set all four at once, with one write (the settings page:
+    /// config_page.rs).
+    pub fn set_all(&mut self, fire: bool, tnt: bool, mobs: bool, creative: bool) {
+        (self.fire, self.tnt, self.mobs, self.creative) = (fire, tnt, mobs, creative);
+        self.save();
+    }
+
     fn save(&self) {
         let text = format!("enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\ncreative_mode = {}\n", self.fire, self.tnt, self.mobs, self.creative);
         if let Err(e) = storage::write(&self.path, text.as_bytes()) {

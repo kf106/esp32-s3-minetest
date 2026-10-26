@@ -78,9 +78,29 @@ password minetest
 
 If the file has no `hotspot` entry, this default is added to the end of it at start-up (the rest of the file is left as it was). The four characters after "MTG-" are the last four hex digits of the board's hotspot MAC address, so boards near each other have different names; the screen's Join page shows the name. A file that still has the old default (`hotspot Luanti` with the password `LuantiLuanti`) gets the new one in its place; a name or password you set yourself is left alone. WPA2 needs a password of 8 to 63 characters; leave the `password` line out for an open hotspot. If the entry can't be used (a password too short, say), the server warns and runs the default instead.
 
-On the hotspot, the server is at **192.168.4.1** (port 30000, Luanti's default), and hands out addresses to up to 8 devices. The screen opens on the Join page: point a phone's camera at the QR code to join, or type the name and password on a laptop, then connect Luanti to 192.168.4.1. There is no internet on the hotspot, so a phone may complain or drift back to mobile data; tell it to stay connected. The power saving described above is off on the hotspot, since the board is the access point.
+On the hotspot, the server is at **192.168.4.1** (port 30000, Luanti's default), and hands out addresses to up to 8 devices. The screen opens on the Join page: point a phone's camera at the QR code to join, or type the name and password on a laptop, then connect Luanti to 192.168.4.1 (or open that address in a browser for [the settings page](#the-settings-page)). There is no internet on the hotspot, so a phone may complain or drift back to mobile data; tell it to stay connected. The power saving described above is off on the hotspot, since the board is the access point.
 
 The passwords are stored on the card in plain text, so treat the card accordingly.
+
+## The settings page
+
+On the hotspot, the board also serves a settings page: join the hotspot with a phone or laptop and open **http://192.168.4.1** in a browser (the Join page's "Luanti or browser" address). It changes the files described in this guide, without a PC or the USB drive:
+
+- **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
+- **Welcome message:** `motd.txt`. Empty means the built-in welcome.
+- **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
+- **The hotspot's name and password.**
+
+Saving writes the files, then the board saves the game and restarts, so that it reads them. Players connected at the time are told the server is restarting, and their clients offer to reconnect. Choose where it restarts:
+
+- **Save and restart on the hotspot:** it comes straight back on the hotspot, without holding BOOT. If you changed the hotspot's name or password, join the new one.
+- **Save and restart on Wi-Fi:** it joins the networks on the list, as at an ordinary start. This is the way to set up a new board: start the hotspot, add your home network, and restart on Wi-Fi.
+
+Things to know:
+
+- **Only on the hotspot:** the page isn't there when the board has joined a network, so nobody on your home network or the internet can reach it.
+- **Anyone on the hotspot can use it:** there is no separate login. The hotspot's password is the lock, and the screen shows it, so anyone who can see the board can change its settings. Don't run the hotspot where that matters.
+- **`wifi.txt` is rewritten:** saving writes it out afresh, so comments of your own in it are replaced by the standard ones.
 
 ## Welcome message
 
