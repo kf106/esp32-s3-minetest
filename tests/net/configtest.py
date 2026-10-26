@@ -1,7 +1,8 @@
 """The settings page (config_page.rs), on the PC build started with
 --config-page: the page and its textures load, a bad form is refused
-without saving, and a good one writes wifi.txt, motd.txt and
-world/settings.txt and the hotspot marker, tells the connected player the
+without saving (a short password; announcing without a description or
+with a private address), and a good one writes wifi.txt, motd.txt,
+world/settings.txt, server.txt and the hotspot marker, tells the connected player the
 server is restarting (with "reconnect"), and stops the server.
 
     python3 configtest.py UDP_PORT HTTP_PORT DATA_DIR netclient.py
@@ -36,6 +37,7 @@ assert status == 200 and kind.startswith("text/html"), (status, kind)
 assert "Server settings" in page and 'value="Home"' in page and 'value="Cafe"' in page
 assert "secret123" not in page, "a network password was sent to the page"
 assert 'name="fire" checked' in page and 'name="mobs">' in page
+assert 'name="ann_on" disabled>' in page, "the announce switch should start greyed out"
 print("page loads; network passwords not shown")
 status, kind, png = get("/t/esp_dirt.png")
 assert status == 200 and kind == "image/png" and png[:4] == b"\x89PNG"
@@ -50,9 +52,17 @@ assert status == 200 and "Not saved" in page and "8 to 63" in page, page[:300]
 assert "secret123" in open(os.path.join(data, "wifi.txt")).read()
 assert not os.path.exists(os.path.join(data, "boot-hotspot"))
 print("bad password refused, nothing saved")
+status, page = post(base + [("ann_on", "on"), ("ann_name", "Stick"), ("ann_desc", ""), ("restart", "hotspot")])
+assert "Not saved" in page and "description" in page, page[:300]
+status, page = post(base + [("ann_on", "on"), ("ann_name", "Stick"), ("ann_desc", "Small"), ("ann_addr", "192.168.1.5"), ("restart", "hotspot")])
+assert "Not saved" in page and "private" in page, page[:300]
+assert not os.path.exists(os.path.join(data, "server.txt"))
+print("announcing refused without a description, or with a private address")
 
 status, page = post(base + [("ssid2", "Office"), ("pass2", "hunter22"), ("orig2", ""),
-                            ("tnt", "on"), ("creative", "on"), ("motd", "Hello\r\nthere"), ("restart", "hotspot")])
+                            ("tnt", "on"), ("creative", "on"), ("motd", "Hello\r\nthere"),
+                            ("ann_on", "on"), ("ann_name", "Minetest on a Stick"), ("ann_desc", "A small world.\nBe nice"),
+                            ("ann_url", ""), ("ann_addr", "mc.zalmanac.com"), ("ann_port", "30001"), ("restart", "hotspot")])
 assert status == 200 and "restarting on its hotspot" in page and "Den" in page, page[:300]
 print("saved")
 
@@ -73,5 +83,9 @@ settings = open(os.path.join(data, "world", "settings.txt")).read()
 assert "enable_fire = false" in settings and "enable_tnt = true" in settings and "enable_mobs = false" in settings and "creative_mode = true" in settings, settings
 assert open(os.path.join(data, "motd.txt")).read() == "Hello\nthere\n"
 assert os.path.exists(os.path.join(data, "boot-hotspot"))
+server = open(os.path.join(data, "server.txt")).read()
+for want in ["server_announce = true", "server_name = Minetest on a Stick", "server_description = A small world. Be nice",
+             "server_address = mc.zalmanac.com", "server_announce_port = 30001", "server_announce_send_players = false"]:
+    assert want + "\n" in server, (want, server)
 print("files written")
 print("CONFIG PAGE OK")

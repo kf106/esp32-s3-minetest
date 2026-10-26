@@ -1,6 +1,6 @@
 # Handoff: announcing to the public server list
 
-Status: researched, not started. No code has been written for this.
+Status: the settings are done (`server.txt`, src/announce.rs, and the settings page); the announcing itself (the HTTP posts) is next.
 
 Goal: let the board announce itself to the public Luanti server list
 (servers.luanti.org), so players see it in the client's Join Game tab, as a
@@ -137,25 +137,29 @@ ESP-IDF v5.5.1 `components/mbedtls/Kconfig`.
   ... is private", which help the user debug port forwarding. Show "listed"
   or the error on the screen's Device page.
 
-## Settings (to decide)
+## Settings (decided and built)
 
-A new file such as `/sd/server.txt`, in Luanti's "name = value" style, made
-by the user editing over USB drive mode, like wifi.txt:
+`/sd/server.txt`, read by src/announce.rs (parse, format, check and load),
+edited on the hotspot's settings page or by hand; see docs/setup.md, "The
+public server list". Luanti's names where it has them:
 
 - `server_announce` (default false)
-- `server_name`
-- `server_description`
-- `server_url` (optional)
-- `server_address` (optional, only with a domain name)
-- `announce_port`: the outside port. Luanti announces its bind port, but if
-  the router forwards a different outside port to 30000, the board must
-  announce that outside port.
-- `server_announce_send_players` (default true, as in Luanti)
+- `server_name`, `server_description` (required; one line, up to 80 and
+  400 characters)
+- `server_url` (optional; http or https)
+- `server_address` (optional; checked as server.py's checkRequestAddress
+  with REJECT_PRIVATE_ADDRESSES on)
+- `server_announce_port` (ours; optional, the outside port)
+- `server_announce_send_players` (default true)
+- `serverlist_url` (default https://servers.luanti.org; not on the page)
+
+`announce::load` gives the settings to use at start-up: with the switch on
+but the details failing `check`, it warns and turns announcing off. main.rs
+and the PC build call it and only log for now.
 
 ## Open questions for Keir
 
-1. **Settings:** where they live (a new server.txt, or extra lines in
-   wifi.txt), and the names to use.
+1. ~~Settings~~: decided, see above.
 2. **Protocol range:** announce 37 to 53 as now, or only 53 until older
    clients are tested? It is untested how far below 53 the server really
    works, and a public listing invites older clients.

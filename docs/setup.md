@@ -84,10 +84,11 @@ The passwords are stored on the card in plain text, so treat the card accordingl
 
 ## The settings page
 
-On the hotspot, the board also serves a settings page: join the hotspot with a phone or laptop and open **http://192.168.4.1** in a browser (the Join page's "Luanti or browser" address). It changes the files described in this guide, without a PC or the USB drive:
+On the hotspot, the board also serves a settings page: join the hotspot with a phone or laptop and open **http://192.168.4.1** in a browser (the IP address on the Join page). It changes the files described in this guide, without a PC or the USB drive:
 
 - **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
 - **Welcome message:** `motd.txt`. Empty means the built-in welcome.
+- **Public server list:** a name, a description and, optionally, a website, a domain name and the port players use from outside (`server.txt`, see [below](#the-public-server-list)). The switch to announce the server stays greyed out until the details are complete and would pass the list's own checks.
 - **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
 - **The hotspot's name and password.**
 
@@ -101,6 +102,32 @@ Things to know:
 - **Only on the hotspot:** the page isn't there when the board has joined a network, so nobody on your home network or the internet can reach it.
 - **Anyone on the hotspot can use it:** there is no separate login. The hotspot's password is the lock, and the screen shows it, so anyone who can see the board can change its settings. Don't run the hotspot where that matters.
 - **`wifi.txt` is rewritten:** saving writes it out afresh, so comments of your own in it are replaced by the standard ones.
+
+## The public server list
+
+The server can be listed on Luanti's public server list, where anyone finds it in the Join Game tab. The settings are in `/sd/server.txt`, set on [the settings page](#the-settings-page) or by hand, in Luanti's own "name = value" style:
+
+```
+server_announce = true
+server_name = Minetest on a Stick
+server_description = A small world on an ESP32. Be nice.
+server_url =
+server_address =
+server_announce_port =
+server_announce_send_players = true
+```
+
+- `server_announce`: whether to announce. It only takes effect when the name and description are filled in and everything passes the list's checks; otherwise the server says why in its log and doesn't announce.
+- `server_name`, `server_description`: what the list shows (one line each, up to 80 and 400 characters).
+- `server_url`: optional, a web page about the server, starting `http://` or `https://`.
+- `server_address`: optional, a domain name that points at your home connection. Leave it empty and the list uses the address the announcement comes from, which is right for most homes. No port and no `http://`. A private address (192.168.x.x and the like) is refused, since nobody outside could use it.
+- `server_announce_port`: optional, the port players use from outside, if your router forwards a different one to the board's 30000.
+- `server_announce_send_players`: whether the list shows the names of the players online, or only how many there are.
+- `serverlist_url`: not on the page; only for announcing to a list of your own (the default is `https://servers.luanti.org`).
+
+For players outside your home to join, your router must forward **UDP** port 30000 to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account.
+
+The announcing itself is not built yet: so far the board only reads these settings and logs that it would announce.
 
 ## Welcome message
 

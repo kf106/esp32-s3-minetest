@@ -59,6 +59,7 @@ media/             built-in textures and models
 partitions.csv     the flash layout: firmware, and room for the game without an SD card
 tools/loadtest.py  bot players for load testing (see below)
 tools/make_mob_sounds.py  the mobs' placeholder sounds
+tools/make_stair_icon.py  the settings page's creative-mode icon (src/web/), drawn from the birch wood texture
 tools/make_mob_skins.py   the mobs' textures
 pc/                the PC (Linux, later Windows) build: main.rs, a systemd unit
 tests/             the tests: tests/run.py runs them all (see Testing below)

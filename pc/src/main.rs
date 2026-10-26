@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "../../src/announce.rs"]
+mod announce;
 #[path = "../../src/auth.rs"]
 mod auth;
 #[path = "../../src/beds.rs"]
@@ -240,11 +242,17 @@ fn run(o: &Options) -> std::io::Result<()> {
         status: status::Status::new(address.clone()),
         max_players: o.max_players,
     };
+    // The public server list (announce.rs): only the settings so far.
+    let list = announce::load(&data.join("server.txt"));
+    if list.enabled {
+        log::info!("Server list: set to announce \"{}\" (the announcing itself is still to come)", list.name);
+    }
     if let Some(port) = o.config_page {
         let files = config_page::Files {
             wifi: data.join("wifi.txt"),
             motd: data.join("motd.txt"),
             settings: data.join("world/settings.txt"),
+            server: data.join("server.txt"),
             hotspot_next: data.join("boot-hotspot"),
         };
         config_page::start(port, files)?;

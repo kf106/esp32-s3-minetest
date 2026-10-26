@@ -8,7 +8,10 @@
 //! - `wifi.txt`: the networks to join, in order, and the hotspot's name
 //!   and password (wifi_config.rs);
 //! - `world/settings.txt`: fire, TNT, mobs and creative mode (settings.rs);
-//! - `motd.txt`: the welcome message (empty: the built-in one).
+//! - `motd.txt`: the welcome message (empty: the built-in one);
+//! - `server.txt`: announcing on the public server list (announce.rs).
+//!   The switch stays greyed out until the details would pass the list's
+//!   checks.
 //!
 //! Nothing changes while the server runs: the files are written, then
 //! the server saves the game and restarts (Server::restart_for_settings),
@@ -35,6 +38,7 @@ use std::time::Duration;
 
 use log::{info, warn};
 
+use crate::announce::{self, Announce};
 use crate::content;
 use crate::settings::Settings;
 use crate::storage;
@@ -60,6 +64,8 @@ pub struct Files {
     pub wifi: PathBuf,
     pub motd: PathBuf,
     pub settings: PathBuf,
+    /// Announcing on the server list (announce.rs).
+    pub server: PathBuf,
     /// Written to restart on the hotspot (see `take_hotspot_marker`).
     pub hotspot_next: PathBuf,
 }
@@ -229,8 +235,10 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
                             info!("Settings page: saved; restarting on {}", if new.restart_on_hotspot { "the hotspot" } else { "Wi-Fi" });
                             let page = restarting_page(&new);
                             respond(&mut stream, "200 OK", html, no_cache, page.as_bytes())?;
-                            // Give the reply time to reach the phone before
-                            // the server goes.
+                            // Close our side now, so the browser shows the
+                            // reply at once, and give it time to arrive
+                            // before the server goes.
+                            let _ = stream.shutdown(std::net::Shutdown::Write);
                             std::thread::sleep(Duration::from_millis(500));
                             RESTART.store(true, Ordering::Relaxed);
                             Ok(())
@@ -253,10 +261,18 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
     }
 }
 
-/// A built-in texture, for the page's look.
+/// The creative-mode icon: an inner birch wood stair, drawn from the
+/// game's texture by tools/make_stair_icon.py (the game has no picture of
+/// a stair: clients draw stairs in 3D).
+const STAIR_ICON: &[u8] = include_bytes!("web/stair_birch_inner.png");
+
+/// A built-in texture (or the page's own icon), for the page's look.
 fn texture(name: &str) -> Option<&'static [u8]> {
     if !name.ends_with(".png") || name.contains('/') {
         return None;
+    }
+    if name == "stair_birch_inner.png" {
+        return Some(STAIR_ICON);
     }
     content::embedded(name)
 }
@@ -310,6 +326,7 @@ struct Current {
     mobs: bool,
     creative: bool,
     motd: String,
+    announce: Announce,
 }
 
 impl Current {
@@ -326,6 +343,7 @@ impl Current {
             mobs: settings.mobs(),
             creative: settings.creative(),
             motd: std::fs::read_to_string(&files.motd).unwrap_or_default(),
+            announce: announce::read(&files.server),
         }
     }
 }
@@ -339,6 +357,7 @@ struct New {
     mobs: bool,
     creative: bool,
     motd: String,
+    announce: Announce,
     restart_on_hotspot: bool,
 }
 
@@ -353,6 +372,7 @@ impl New {
             mobs: self.mobs,
             creative: self.creative,
             motd: self.motd.clone(),
+            announce: self.announce.clone(),
         }
     }
 }
@@ -416,6 +436,34 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
         problem.get_or_insert(format!("The welcome message is too long: at most {MAX_MOTD} characters."));
     }
 
+    // The server list. One-line fields: control characters (a line break
+    // from a hand-made request) would break the file.
+    let line = |name: &str| get(name).unwrap_or("").chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().to_string();
+    let port_text = line("ann_port");
+    let port = match port_text.parse::<u16>() {
+        _ if port_text.is_empty() => None,
+        Ok(p) if p > 0 => Some(p),
+        _ => {
+            problem.get_or_insert("The port players use must be a number from 1 to 65535.".to_string());
+            None
+        }
+    };
+    let announce = Announce {
+        enabled: on("ann_on"),
+        name: line("ann_name"),
+        description: line("ann_desc"),
+        url: line("ann_url"),
+        address: line("ann_addr"),
+        port,
+        send_players: on("ann_players"),
+        list_url: current.announce.list_url.clone(),
+    };
+    if announce.enabled {
+        if let Err(why) = announce::check(&announce) {
+            problem.get_or_insert(format!("Can't announce on the server list: {why}."));
+        }
+    }
+
     let restart_on_hotspot = get("restart") != Some("wifi");
     if !restart_on_hotspot && networks.is_empty() {
         problem.get_or_insert("There are no Wi-Fi networks to join: add one, or restart on the hotspot.".to_string());
@@ -429,6 +477,7 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
         mobs: on("mobs"),
         creative: on("creative"),
         motd,
+        announce,
         restart_on_hotspot,
     };
     match problem {
@@ -454,6 +503,7 @@ fn save(new: &New, files: &Files) -> io::Result<()> {
         text.push('\n');
         storage::write(&files.motd, text.as_bytes())?;
     }
+    storage::write(&files.server, announce::format(&new.announce).as_bytes())?;
     if new.restart_on_hotspot {
         std::fs::write(&files.hotspot_next, b"hotspot\n")?;
     } else if files.hotspot_next.exists() {
@@ -487,6 +537,7 @@ const STYLE: &str = r#"
 html{background:#2a1d12 url(/t/esp_dirt.png) repeat;background-size:64px;image-rendering:pixelated}
 body{margin:0;color:var(--ink);font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding-bottom:120px}
 img{image-rendering:pixelated}
+input[type=checkbox]{accent-color:var(--on)}
 header{background:url(/t/esp_grass_side.png) repeat-x;background-size:48px;height:48px;border-bottom:4px solid #000}
 .title{max-width:720px;margin:0 auto;padding:18px 16px 6px;display:flex;align-items:center;gap:12px}
 .title img{width:48px;height:48px}
@@ -509,6 +560,14 @@ p.note{color:var(--dim);font-size:14px;margin:6px 0 0}
 .toggle input:checked~.state::after{content:"ON"}
 .toggle input:focus-visible~b{outline:2px dashed var(--warn)}
 .toggle small{display:block;color:var(--dim);font-size:12px;margin-top:4px}
+.toggle.wide{display:grid;grid-template-columns:48px 1fr auto;gap:12px;align-items:center;text-align:left;margin-bottom:6px}
+.toggle.wide img{margin:0}
+.toggle.wide .state{margin:0}
+.toggle input:disabled~*{opacity:.45}
+.toggle:has(input:disabled){cursor:not-allowed;background:#2e2e2e}
+p.hint{margin:4px 0 8px;font-size:14px;color:var(--warn);min-height:1.4em}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+@media (max-width:520px){.two{grid-template-columns:1fr}}
 label.field{display:block;font-size:14px;color:var(--dim);margin:8px 0 4px}
 input[type=text],input[type=password],textarea{width:100%;font:inherit;color:var(--ink);background:#111;border:2px solid #000;box-shadow:inset 2px 2px 0 #000,inset -1px -1px 0 #444;padding:8px 10px;border-radius:0}
 input:focus,textarea:focus{outline:2px solid var(--warn);outline-offset:0}
@@ -520,11 +579,18 @@ textarea{min-height:110px;resize:vertical}
 .btn:active{box-shadow:inset 2px 2px 0 #333,inset -2px -2px 0 #8a8a8a}
 .btn.small{padding:4px 10px;min-width:38px}
 .btn.go{background:#3f7f24;box-shadow:inset 2px 2px 0 #73b84a,inset -2px -2px 0 #24521a}
-.btn.stone{background:#6b6b6b url(/t/esp_stone.png);background-size:48px}
+.btn.water{background:#2a5fb0 url(/t/default_water.png);background-size:48px;box-shadow:inset 2px 2px 0 #6b9ee6,inset -2px -2px 0 #173a73}
 .err{background:#5a1a17;border:3px solid #000;padding:10px 12px;margin:16px 0;box-shadow:inset 2px 2px 0 #8c3a35}
 .bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:3px solid #000;padding:10px 16px}
 .bar div{max-width:720px;margin:0 auto;display:flex;gap:10px;flex-wrap:wrap}
 .bar .btn{flex:1 1 220px}
+.busy{position:fixed;inset:0;z-index:9;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.6);padding:16px}
+.busy div{background:var(--panel);border:3px solid #000;box-shadow:inset 2px 2px 0 var(--hi),inset -2px -2px 0 var(--lo);padding:18px 20px;max-width:420px;text-align:center}
+.busy img{width:48px;height:48px;animation:spin 1.2s steps(8) infinite}
+.busy b{display:block;font-size:19px;margin:10px 0 6px;text-shadow:2px 2px 0 #000}
+.busy p{margin:0;color:var(--dim);font-size:14px}
+body.saving .busy{display:flex}
+@keyframes spin{to{transform:rotate(360deg)}}
 @media (max-width:520px){.net{grid-template-columns:1fr}.net .ctl{justify-content:flex-end}}
 "#;
 
@@ -536,8 +602,38 @@ if(b.dataset.do==='up'&&r.previousElementSibling)list.insertBefore(r,r.previousE
 if(b.dataset.do==='down'&&r.nextElementSibling)list.insertBefore(r.nextElementSibling,r);
 if(b.dataset.do==='del')r.remove();});
 document.getElementById('add').addEventListener('click',e=>{e.preventDefault();add();});
-document.getElementById('f').addEventListener('submit',()=>{list.querySelectorAll('.net').forEach((r,i)=>{
-r.querySelector('[data-n=ssid]').name='ssid'+i;r.querySelector('[data-n=pass]').name='pass'+i;r.querySelector('[data-n=orig]').name='orig'+i;});});
+document.getElementById('f').addEventListener('submit',e=>{
+if(document.body.classList.contains('saving')){e.preventDefault();return;}
+list.querySelectorAll('.net').forEach((r,i)=>{
+r.querySelector('[data-n=ssid]').name='ssid'+i;r.querySelector('[data-n=pass]').name='pass'+i;r.querySelector('[data-n=orig]').name='orig'+i;});
+const wifi=e.submitter&&e.submitter.value==='wifi';
+document.getElementById('busy_what').textContent=wifi?'Saving, then restarting on Wi-Fi':'Saving, then restarting on the hotspot';
+document.body.classList.add('saving');});
+function annProblem(){
+const v=id=>document.getElementById(id).value.trim();
+const name=v('ann_name'),desc=v('ann_desc'),url=v('ann_url'),addr=v('ann_addr').toLowerCase(),port=v('ann_port');
+const ctl=/[\u0000-\u001f\u007f]/;
+if(!name)return'Give the server a name to switch this on.';
+if(name.length>MAXN||ctl.test(name))return'The name is too long.';
+if(!desc)return'Give the server a description to switch this on.';
+if(desc.length>MAXD||ctl.test(desc))return'The description is too long.';
+if(url&&!/^https?:\/\/[^\s'"]+$/.test(url))return'The website must start with http:// or https://.';
+if(port&&!(/^\d+$/.test(port)&&+port>=1&&+port<=65535))return'The port must be a number from 1 to 65535.';
+if(addr){
+if(/[\s@#\/*"']/.test(addr)||addr.startsWith('-')||/[^\x00-\x7f]/.test(addr))return'The address must be a domain name or a public IP address, without http:// or a port.';
+if(addr.includes('.')&&addr.includes(':'))return'Leave the port out of the address: it has its own box.';
+const m=addr.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+if(m){const a=+m[1],b=+m[2];
+if(a==10||a==127||a==0||a>=224||(a==172&&b>=16&&b<32)||(a==192&&b==168)||(a==100&&b>=64&&b<128)||(a==169&&b==254))return'That is a private or local address: leave it empty to use your public one.';}
+else if(!addr.includes(':')){const tld=addr.split('.').pop();
+if(!addr.includes('.')||!/^[a-z]/.test(tld))return'The address must be a domain name or a public IP address.';
+if(/(^localhost|\.localhost|\.local|\.internal)$/.test(addr))return'That is a local name: leave it empty to use your public address.';
+if(/(\.example\.(com|net|org))$/.test(addr))return'That is an example address.';}}
+return'';}
+function annCheck(){const why=annProblem(),sw=document.getElementById('ann_on');
+sw.disabled=!!why;if(why)sw.checked=false;document.getElementById('ann_hint').textContent=why;}
+['ann_name','ann_desc','ann_url','ann_addr','ann_port'].forEach(i=>document.getElementById(i).addEventListener('input',annCheck));
+annCheck();
 document.getElementById('show').addEventListener('change',e=>{document.getElementById('hs_pass').type=e.target.checked?'text':'password';});
 "#;
 
@@ -553,6 +649,11 @@ fn network_row(i: usize, ssid: &str, known: bool) -> String {
         orig = if known { esc(ssid) } else { String::new() },
         ssid = esc(ssid),
     )
+}
+
+fn capitalise(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 fn toggle(name: &str, icon: &str, title: &str, note: &str, on: bool) -> String {
@@ -585,6 +686,16 @@ fn page(c: &Current, error: Option<&str>) -> String {
 <section><h2><img src="/t/default_sign_wood.png" alt="">Welcome message</h2>
 <textarea name="motd" maxlength="{MAX_MOTD}" placeholder="Leave empty for the built-in welcome.">{motd}</textarea>
 <p class="note">Each line is one line in the chat when a player joins. The list of players online is added after it.</p></section>
+<section><h2><img src="/t/map_mapping_kit.png" alt="">Public server list</h2>
+<label class="toggle wide"><input type="checkbox" id="ann_on" name="ann_on"{ann_on}{ann_dis}><img src="/t/map_mapping_kit.png" alt=""><span><b>Announce this server</b><small>List it in Luanti's Join Game tab, for anyone to find.</small></span><span class="state"></span></label>
+<p class="hint" id="ann_hint">{ann_hint}</p>
+<label class="field" for="ann_name">Server name</label><input type="text" id="ann_name" name="ann_name" value="{ann_name}" maxlength="{max_name}" autocomplete="off">
+<label class="field" for="ann_desc">Description</label><input type="text" id="ann_desc" name="ann_desc" value="{ann_desc}" maxlength="{max_desc}" autocomplete="off" placeholder="What players will find, and any rules">
+<label class="field" for="ann_url">Website (optional)</label><input type="text" id="ann_url" name="ann_url" value="{ann_url}" maxlength="{max_url}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://...">
+<div class="two"><div><label class="field" for="ann_addr">Domain name (optional)</label><input type="text" id="ann_addr" name="ann_addr" value="{ann_addr}" maxlength="255" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="your public address"></div>
+<div><label class="field" for="ann_port">Port players use (optional)</label><input type="text" id="ann_port" name="ann_port" value="{ann_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="30000"></div></div>
+<label class="field"><input type="checkbox" name="ann_players"{ann_players}> Show the names of the players online</label>
+<p class="note">For players outside your home to join, your router must forward UDP port 30000 to the board (and your internet connection must have its own public address: most mobile ones don't). Once listed, anyone can join and make an account. Leave the domain name empty unless you have one pointing at your home; the port too, unless your router forwards a different one.</p></section>
 <section><h2><img src="/t/default_mese_crystal.png" alt="">Wi-Fi networks</h2>
 <div id="nets">{rows}</div>
 <template id="blank">{blank}</template>
@@ -596,13 +707,27 @@ fn page(c: &Current, error: Option<&str>) -> String {
 <label class="field"><input type="checkbox" id="show"> Show the password</label>
 <p class="note">8 to 63 characters, or empty for an open hotspot. If you change these, join the new hotspot after the restart.</p></section>
 </main>
-<div class="bar"><div><button class="btn go" name="restart" value="hotspot">Save and restart on the hotspot</button><button class="btn stone" name="restart" value="wifi">Save and restart on Wi-Fi</button></div></div>
-</form><script>{SCRIPT}</script></body></html>"#,
+<div class="bar"><div><button class="btn go" name="restart" value="hotspot">Save and restart on the hotspot</button><button class="btn water" name="restart" value="wifi">Save and restart on Wi-Fi</button></div></div>
+</form>
+<div class="busy" role="status" aria-live="polite"><div><img src="/t/default_mese_crystal.png" alt=""><b id="busy_what">Saving</b><p>Don't switch the board off. This takes a few seconds; the board then restarts and this page shows what happens next.</p></div></div>
+<script>const MAXN={max_name},MAXD={max_desc};{SCRIPT}</script></body></html>"#,
         fire = toggle("fire", "fire_basic_flame.png", "Fire", "Spreads and burns", c.fire),
         tnt = toggle("tnt", "tnt_side.png", "TNT", "Can be lit", c.tnt),
         mobs = toggle("mobs", "mobs_hexer_orb.png", "Mobs", "Hostile mobs spawn", c.mobs),
-        creative = toggle("creative", "default_mese_crystal.png", "Creative", "Unlimited blocks, no damage", c.creative),
+        creative = toggle("creative", "stair_birch_inner.png", "Creative", "Unlimited blocks", c.creative),
         motd = esc(&c.motd),
+        ann_on = if c.announce.enabled && announce::check(&c.announce).is_ok() { " checked" } else { "" },
+        ann_dis = if announce::check(&c.announce).is_err() { " disabled" } else { "" },
+        ann_hint = announce::check(&c.announce).err().map(|why| esc(&capitalise(&why))).unwrap_or_default(),
+        ann_name = esc(&c.announce.name),
+        ann_desc = esc(&c.announce.description),
+        ann_url = esc(&c.announce.url),
+        ann_addr = esc(&c.announce.address),
+        ann_port = c.announce.port.map(|p| p.to_string()).unwrap_or_default(),
+        ann_players = if c.announce.send_players { " checked" } else { "" },
+        max_name = announce::MAX_NAME,
+        max_desc = announce::MAX_DESCRIPTION,
+        max_url = announce::MAX_URL,
         blank = network_row(0, "", false),
         hs_ssid = esc(&c.hotspot.ssid),
         hs_pass = esc(&c.hotspot.password),
@@ -624,10 +749,39 @@ fn restarting_page(new: &New) -> String {
     };
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Restarting</title><style>{STYLE}</style></head><body><header></header>
-<div class="title"><img src="/t/default_meselamp.png" alt=""><div><h1>Saved</h1><p class="sub">The game is saved before the restart.</p></div></div>
-<main><section><h2><img src="/t/default_mese_crystal.png" alt="">Restarting</h2><p>{what}</p><p class="note">{then}</p></section></main></body></html>"#
+<title>Restarting</title><style>{STYLE}{inline}</style></head><body><header></header>
+<div class="title"><img src="{lamp}" alt=""><div><h1>Saved</h1><p class="sub">The game is saved before the restart.</p></div></div>
+<main><section><h2><img src="{crystal}" alt="">Restarting</h2><p>{what}</p><p class="note">{then}</p></section></main></body></html>"#,
+        // The server is gone by the time the browser asks for textures, so
+        // this page carries its own.
+        inline = format!(
+            "html{{background-image:url({})}}header{{background-image:url({})}}",
+            data_url("esp_dirt.png"),
+            data_url("esp_grass_side.png")
+        ),
+        lamp = data_url("default_meselamp.png"),
+        crystal = data_url("default_mese_crystal.png"),
     )
+}
+
+/// A built-in texture as a `data:` URL, for a page that must not need
+/// the server once it has arrived.
+fn data_url(name: &str) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let data = texture(name).unwrap_or(&[]);
+    let mut out = String::from("data:image/png;base64,");
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -647,6 +801,7 @@ mod tests {
             mobs: false,
             creative: false,
             motd: String::new(),
+            announce: Announce::default(),
         }
     }
 
@@ -712,6 +867,14 @@ mod tests {
     }
 
     #[test]
+    fn base64() {
+        // The textures' data URLs: standard base64, padded.
+        let url = data_url("esp_dirt.png");
+        assert!(url.starts_with("data:image/png;base64,iVBORw0KGgo"));
+        assert_eq!((url.len() - "data:image/png;base64,".len()) % 4, 0);
+    }
+
+    #[test]
     fn page_never_shows_network_passwords() {
         let c = current();
         let html = page(&c, Some("<oops>"));
@@ -729,6 +892,7 @@ mod tests {
             wifi: dir.join("wifi.txt"),
             motd: dir.join("motd.txt"),
             settings: dir.join("world/settings.txt"),
+            server: dir.join("server.txt"),
             hotspot_next: dir.join("boot-hotspot"),
         };
         let new = New {
@@ -739,6 +903,7 @@ mod tests {
             mobs: true,
             creative: false,
             motd: "Welcome!\n".into(),
+            announce: Announce { enabled: true, name: "Stick".into(), description: "Small".into(), ..Announce::default() },
             restart_on_hotspot: true,
         };
         save(&new, &files).unwrap();
@@ -748,6 +913,7 @@ mod tests {
         let s = Settings::open(&files.settings);
         assert_eq!((s.fire(), s.tnt(), s.mobs(), s.creative()), (false, true, true, false));
         assert_eq!(std::fs::read_to_string(&files.motd).unwrap(), "Welcome!\n");
+        assert_eq!(announce::read(&files.server), new.announce);
         assert!(take_hotspot_marker(&files.hotspot_next));
         assert!(!take_hotspot_marker(&files.hotspot_next));
         // An empty message goes back to the built-in one.

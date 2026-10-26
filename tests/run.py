@@ -95,6 +95,10 @@ def prepare():
     for f in (ROOT / "src").glob("*.rs"):
         if f.name not in ("main.rs", "lcd.rs"):
             copy_if_changed(f, WORK / "src" / f.name)
+    # Files the sources build in from beside them (the settings page's).
+    for f in (ROOT / "src" / "web").glob("*"):
+        (WORK / "src" / "web").mkdir(exist_ok=True)
+        copy_if_changed(f, WORK / "src" / "web" / f.name)
     copy_if_changed(TESTS / "host" / "harness.rs", WORK / "src" / "main.rs")
     copy_if_changed(TESTS / "host" / "Cargo.toml", WORK / "Cargo.toml")
     copy_if_changed(TESTS / "host" / "data" / "skin_grey_wizard.png", WORK / "data" / "skin_grey_wizard.png")

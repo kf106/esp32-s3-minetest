@@ -1,3 +1,4 @@
+mod announce;
 mod auth;
 mod beds;
 mod binoculars;
@@ -294,12 +295,18 @@ fn main() -> anyhow::Result<()> {
     if server.status_data_addr() != sent {
         log::error!("Server was built with a corrupted status pointer; expect a crash");
     }
+    // The public server list (announce.rs): only the settings so far.
+    let list = announce::load(std::path::Path::new(&format!("{MOUNT}/server.txt")));
+    if list.enabled {
+        info!("Server list: set to announce \"{}\" (the announcing itself is still to come)", list.name);
+    }
     // The settings page, on the hotspot only (see config_page.rs).
     if boot == Boot::Hotspot {
         let files = config_page::Files {
             wifi: WIFI_FILE.into(),
             motd: format!("{MOUNT}/motd.txt").into(),
             settings: format!("{MOUNT}/world/settings.txt").into(),
+            server: format!("{MOUNT}/server.txt").into(),
             hotspot_next: HOTSPOT_NEXT.into(),
         };
         if let Err(e) = config_page::start(config_page::PORT, files) {

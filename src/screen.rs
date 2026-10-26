@@ -594,7 +594,7 @@ fn render_join(f: &mut Frame, st: &Status, hotspot: &Hotspot) {
         y += 3;
         // The same address in a browser opens the settings page
         // (config_page.rs).
-        f.text(&label, text_x, y, "Luanti or browser");
+        f.text(&label, text_x, y, "IP address");
         y += line;
     }
     f.text(&Pen::new(&SMALL, GOOD, BACKGROUND, right), text_x, y, &hotspot.ip);
