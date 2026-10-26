@@ -511,11 +511,11 @@ assert "esp:steel_ingot 5" in inv["main"]
 saved = open(os.path.join(os.environ["TEST_WORLD"], "world/furnaces.txt")).read(); assert saved == "", saved
 print("FURNACE OK")
 
-# Wi-Fi power saving: after 30 s with nobody doing anything, on; the first move turns it off.
+# Wi-Fi power saving: never while anyone is connected, however idle (the
+# server's stderr must show no "DOZING true" during this wait); it goes on
+# 30 s after the last player leaves.
 if os.environ.get("IDLE_TEST"):
     f.cmds.clear()
     end = time.time() + 36
     while time.time() < end: f.pump(0.5)
-    print("idle 36 s")
-    f.pos_bs = (f.pos_bs[0] + 5, f.pos_bs[1], f.pos_bs[2]); f.playerpos(); f.pump(0.5)
-    print("moved")
+    print("idle 36 s while connected: no DOZING expected")

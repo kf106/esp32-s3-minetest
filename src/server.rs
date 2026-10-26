@@ -108,8 +108,7 @@ const INVENTORY_SAVE: Duration = Duration::from_secs(5);
 /// (minetest_game's lava cooling ABM: interval 2, chance 2).
 const LAVA_COOLING: Duration = Duration::from_secs(2);
 const LAVA_COOLING_CHANCE: u32 = 2;
-/// Wi-Fi power saving goes on after this long with nobody doing anything
-/// (no one connected, or every player standing still).
+/// Wi-Fi power saving goes on after this long with nobody connected.
 const IDLE_POWER_SAVE: Duration = Duration::from_secs(30);
 /// How many reliable packets may be in flight (unacknowledged) per channel.
 /// Luanti's own minimum window is 32.
@@ -776,8 +775,8 @@ pub struct Server {
     heap_damaged: bool,
     /// Id for the next sound that may need fading out.
     next_sound_id: i32,
-    /// When a player last did something (moved, looked, dug, chatted...)
-    /// or a client was logging in, and whether Wi-Fi power saving is on.
+    /// When someone was last connected (or did something), and whether
+    /// Wi-Fi power saving is on.
     last_activity: Instant,
     power_saving: bool,
     /// Running its own hotspot (so no power saving: that is for a client).
@@ -7782,25 +7781,25 @@ impl Server {
     }
 
     /// Let the Wi-Fi radio doze between the router's beacons once nobody
-    /// has done anything for IDLE_POWER_SAVE: no one connected, or every
-    /// player idle with their map loaded. It saves power and heat (the
-    /// board's 3.3 V regulator gets hot), at the cost of delaying packets
-    /// by up to a few hundred milliseconds, which only the first move after
-    /// a pause will notice.
+    /// has been connected for IDLE_POWER_SAVE. It saves power and heat (the
+    /// board's 3.3 V regulator gets hot), at the cost of delaying incoming
+    /// packets until the next beacon that announces them (the DTIM): about
+    /// 100 ms on some routers, 300 ms or more on others (a TP-Link Deco).
+    /// That is too much for a player standing still, so it is never on
+    /// while anyone is connected, and the first packet of a login wakes it.
     fn update_power_saving(&mut self) {
-        if self.hotspot || self.power_saving || self.last_activity.elapsed() < IDLE_POWER_SAVE {
+        if !self.peers.is_empty() {
+            // Counting starts again when the last player leaves.
+            self.wake();
             return;
         }
-        // Not while a player is still being sent their map: it would load
-        // slowly, the client's acknowledgements being delayed.
-        let loading = self.peers.values().any(|p| !p.ready || !p.pending_blocks.is_empty() || !p.awaiting.is_empty());
-        if loading {
+        if self.hotspot || self.power_saving || self.last_activity.elapsed() < IDLE_POWER_SAVE {
             return;
         }
         self.power_saving = true;
         set_wifi_power_save(true);
         status::lock(&self.status).wifi_dozing = true;
-        info!("Wi-Fi power saving on: nobody has done anything for {}s", IDLE_POWER_SAVE.as_secs());
+        info!("Wi-Fi power saving on: nobody connected for {}s", IDLE_POWER_SAVE.as_secs());
     }
 
     fn congested(&self) -> bool {

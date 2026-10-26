@@ -334,7 +334,7 @@ fn render_device(f: &mut Frame, st: &Status, sys: &System) {
     y += line;
 
     // Network
-    // "doze": power saving, nobody doing anything (see server.rs).
+    // "doze": power saving, nobody connected (see server.rs).
     let wifi = match (sys.rssi, sys.channel) {
         _ if st.hotspot.is_some() => match (sys.hotspot_clients, sys.channel) {
             (Some(n), Some(c)) => format!("AP ch{c}, {n} on"),

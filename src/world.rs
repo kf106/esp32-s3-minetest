@@ -108,6 +108,26 @@ const DUNGEON_CACHE_NODES: usize = if cfg!(pc) { 10_000_000 } else { 60_000 };
 
 /// How far torch light reaches: it starts at TORCH_LIGHT and fades by one
 /// per node, so nodes further than this get none.
+/// Loading a world runs for several seconds on the server's core without
+/// a pause (each torch and changed node may need its terrain and dungeons
+/// worked out), which starves that core's idle task and sets off the task
+/// watchdog after 5 s. Call this in such loops: about once a second it
+/// sleeps for a tick so the idle task can run.
+struct Breather(std::time::Instant);
+
+impl Breather {
+    fn new() -> Self {
+        Breather(std::time::Instant::now())
+    }
+
+    fn breathe(&mut self) {
+        if self.0.elapsed() >= std::time::Duration::from_secs(1) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.0 = std::time::Instant::now();
+        }
+    }
+}
+
 const TORCH_REACH: i32 = TORCH_LIGHT as i32 - 1;
 const FIELD_SIDE: i32 = 2 * TORCH_REACH + 1;
 
@@ -367,8 +387,10 @@ impl World {
             if unknown > 0 { format!(" ({unknown} with unknown node names skipped)") } else { String::new() }
         );
         // Light up the torches now that the world is complete.
+        let mut breather = Breather::new();
         let torches: Vec<NodePos> = world.state.changes.iter().filter(|(_, &id)| content::light_source(id) > 0).map(|(&p, _)| p).collect();
         for p in torches {
+            breather.breathe();
             let field = Arc::new(world.torch_field(p));
             Arc::make_mut(&mut world.state).torch_light.insert(p, field);
         }
@@ -378,11 +400,13 @@ impl World {
         // Cobblestone players left beside water, for moss to grow on.
         let cobble: Vec<NodePos> = world.state.changes.iter().filter(|(_, &id)| crate::nature::mossy_of(id).is_some()).map(|(&p, _)| p).collect();
         for p in cobble {
+            breather.breathe();
             world.watch_moss(p);
         }
         // Where players changed the ground, for grass to spread or die.
         let changed: Vec<NodePos> = world.state.changes.keys().copied().collect();
         for p in changed {
+            breather.breathe();
             world.watch_turf(p);
         }
         world.load_metas();
@@ -500,7 +524,9 @@ impl World {
     fn load_log(&mut self, mut data: &[u8]) -> (usize, usize) {
         // Loading isn't "changing": no versions or recent list.
         let (mut records, mut unknown) = (0, 0);
+        let mut breather = Breather::new();
         while data.len() >= 13 {
+            breather.breathe();
             let i = |o: usize| i32::from_be_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
             let pos = (i(0), i(4), i(8));
             let len = data[12] as usize;
