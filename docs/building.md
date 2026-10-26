@@ -61,3 +61,13 @@ TEST=1 WIFI_SSID='your network' WIFI_PASS='your password' cargo run --release
 ```
 
 Every player then gets, once, 50 each of cobblestone, stone, sand, sandstone, the three kinds of tree trunk and planks, sticks, coal lumps, iron lumps, steel ingots, apples, wheat and cotton seeds, wheat and cotton. The value of `TEST` is the kit's name, recorded in the player's inventory file: rebuilding with `TEST=1` gives nothing more, and `TEST=2` (or any new value) hands out a fresh kit. A test build also grows saplings, apples and crops ten times faster, so a field of wheat ripens in a few minutes rather than an hour. Build without `TEST` for normal play.
+
+### Performance logs
+
+For load testing (see [Development](development.md#load-testing)), build with `PERF=1`:
+
+```
+PERF=1 cargo run --release
+```
+
+The serial log then says every 10 seconds how busy each core and the main tasks were, where the server's main loop spent its time, and how many map blocks were built and sent; and every minute how much PSRAM is free. Build without `PERF` for normal play: nothing is measured then.

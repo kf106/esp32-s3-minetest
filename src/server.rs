@@ -125,6 +125,104 @@ const STALE_NOTICE_INTERVAL: Duration = Duration::from_secs(3);
 /// pauses for one scheduler tick so lower-priority tasks (including the
 /// idle task the watchdog checks) get to run.
 const MAX_BUSY: Duration = Duration::from_millis(200);
+
+/// How many guessed height ranges are kept (see Server::estimates).
+const ESTIMATES_MAX: usize = 4096;
+
+/// How often players' block plans with guessed heights are made again
+/// (see Server::plan_blocks).
+const REPLAN_EVERY: Duration = Duration::from_secs(1);
+
+/// How often the main loop's profile goes to the log, while players are on
+/// (in a PERF=1 build).
+const PROFILE_EVERY: Duration = Duration::from_secs(10);
+
+/// Where the main loop's time goes: the packets handled (and, within them,
+/// the main commands) and each part of the tick, for the log every
+/// PROFILE_EVERY. (Instant::now costs about a microsecond on the board.)
+#[derive(Default)]
+#[cfg_attr(not(perf), allow(dead_code))]
+struct Profile {
+    started: Option<Instant>,
+    /// The main loop's working (not waiting) time.
+    busy: Duration,
+    /// Top-level parts: time and count.
+    parts: Vec<(&'static str, Duration, u32)>,
+    /// Commands, within "packets".
+    commands: Vec<(&'static str, Duration, u32)>,
+}
+
+#[cfg_attr(not(perf), allow(dead_code))]
+impl Profile {
+    fn add(list: &mut Vec<(&'static str, Duration, u32)>, name: &'static str, took: Duration) {
+        match list.iter_mut().find(|e| e.0 == name) {
+            Some(e) => {
+                e.1 += took;
+                e.2 += 1;
+            }
+            None => list.push((name, took, 1)),
+        }
+    }
+
+    fn part(&mut self, name: &'static str, took: Duration) {
+        Self::add(&mut self.parts, name, took);
+    }
+
+    fn command(&mut self, name: &'static str, took: Duration) {
+        Self::add(&mut self.commands, name, took);
+    }
+
+    /// The report, if PROFILE_EVERY has passed, starting the next.
+    fn report(&mut self) -> Option<String> {
+        let started = *self.started.get_or_insert_with(Instant::now);
+        let secs = started.elapsed().as_secs_f32();
+        if started.elapsed() < PROFILE_EVERY {
+            return None;
+        }
+        let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+        let accounted: Duration = self.parts.iter().map(|e| e.1).sum();
+        let mut parts = std::mem::take(&mut self.parts);
+        parts.push(("other", self.busy.saturating_sub(accounted), 0));
+        parts.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let mut commands = std::mem::take(&mut self.commands);
+        commands.sort_by_key(|e| std::cmp::Reverse(e.1));
+        let list = |l: &[(&'static str, Duration, u32)]| {
+            l.iter()
+                .filter(|e| ms(e.1) >= 10.0)
+                .take(10)
+                .map(|e| if e.2 > 0 { format!("{} {:.0} ms ({})", e.0, ms(e.1), e.2) } else { format!("{} {:.0} ms", e.0, ms(e.1)) })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let text = format!(
+            "Main loop over {secs:.0} s: busy {:.0}% | {} | commands (in packets): {}",
+            self.busy.as_secs_f32() / secs * 100.0,
+            list(&parts),
+            list(&commands)
+        );
+        self.busy = Duration::ZERO;
+        self.started = Some(Instant::now());
+        Some(text)
+    }
+}
+
+/// Run `$e`, adding its time to the profile as part `$name` (only in a
+/// PERF=1 build; otherwise just run it).
+#[cfg(perf)]
+macro_rules! timed {
+    ($s:ident, $name:expr, $e:expr) => {{
+        let started = Instant::now();
+        let r = $e;
+        $s.profile.part($name, started.elapsed());
+        r
+    }};
+}
+#[cfg(not(perf))]
+macro_rules! timed {
+    ($s:ident, $name:expr, $e:expr) => {{
+        $e
+    }};
+}
 /// Time per pass of the main loop for generating map blocks, so incoming
 /// packets are read often enough not to overflow the socket's queue.
 const BLOCK_TIME_BUDGET: Duration = Duration::from_millis(15);
@@ -314,6 +412,11 @@ struct Peer {
     /// Block the player was in when `pending_blocks` was planned.
     view_center: Option<BlockPos>,
     view_radius: i16,
+    /// Whether the last plan guessed some block columns' heights (see
+    /// plan_blocks): it is made again once they are worked out.
+    view_estimated: bool,
+    /// The block columns it guessed.
+    estimated_columns: Vec<(i16, i16)>,
     /// The player's position in BS units (10 per node), velocity and yaw,
     /// as last reported. The player's object id is the peer id.
     pos_bs: [f32; 3],
@@ -445,6 +548,8 @@ impl Peer {
             awaiting: VecDeque::new(),
             view_center: None,
             view_radius: MAX_VIEW_RADIUS,
+            view_estimated: false,
+            estimated_columns: Vec::new(),
             pos_bs: [0.0; 3],
             speed_bs: [0.0; 3],
             yaw: 0.0,
@@ -543,6 +648,8 @@ struct Content {
 }
 
 pub struct Server {
+    /// Where the main loop's time goes (see Profile).
+    profile: Profile,
     socket: UdpSocket,
     auth: AuthStore,
     /// Privileges, the administrator and bans (privs.rs).
@@ -627,6 +734,16 @@ pub struct Server {
     /// When the butterflies and fireflies near players last looked at the
     /// light (insects.rs).
     insects_tended: Instant,
+    /// When players' block plans with guessed heights were last redone.
+    views_checked: Instant,
+    /// Rough height ranges of block columns not yet worked out (see
+    /// plan_blocks): pure functions of position, so worked out once.
+    estimates: crate::fasthash::FastMap<(i16, i16), (i32, i32)>,
+    /// Players' latest positions not yet passed on to the others, by
+    /// object id (from whom, and the AO_CMD_UPDATE_POSITION): sent
+    /// together every SEND_INTERVAL (see send_moves).
+    pending_moves: Vec<(u16, SocketAddr, Vec<u8>)>,
+    moves_sent: Instant,
     items_burned: Instant,
     /// When the liquids last flowed.
     liquids_flowed: Instant,
@@ -753,7 +870,11 @@ fn start_srp_thread(results: Sender<SrpResult>) -> Option<Sender<SrpJob>> {
 }
 
 /// A map block for the builder to make, from a snapshot of the world's
-/// changes.
+/// changes. The snapshot's Arc is only ever cloned and dropped by the
+/// server loop: the builder hands each one back (in Built) when it takes
+/// the next. On the ESP32-S3 an atomic operation on PSRAM isn't atomic
+/// between the two cores, so an Arc's count changed from both gets lost,
+/// and the world's state would be freed while still in use.
 struct BuildJob {
     pos: BlockPos,
     state: Arc<world::State>,
@@ -765,6 +886,9 @@ struct Built {
     pos: BlockPos,
     version: u64,
     payload: Vec<u8>,
+    /// The snapshots the builder used before this block's, to be dropped
+    /// by the server loop (see BuildJob).
+    _old_states: Vec<Arc<world::State>>,
 }
 
 struct BlockBuilder {
@@ -791,10 +915,19 @@ fn start_block_builder(status: SharedStatus, port: u16) -> Option<BlockBuilder> 
     let spawned = spawn_on_second_core(b"blocks\0", 16 * 1024, 1, move || {
         // Its own copy of the terrain caches; the changes come with each job.
         let mut world = World::builder();
+        // Snapshots to hand back to the server loop (see BuildJob).
+        let mut old_states = Vec::new();
         for job in queue {
+            // A block outside the world means a bad position somewhere:
+            // logged, to find where, and not built.
+            if !world::block_in_world(job.pos) {
+                warn!("Block builder asked for block {:?}, outside the world", job.pos);
+                old_states.push(job.state);
+                continue;
+            }
             let started = Instant::now();
             let version = job.state.version();
-            world.use_snapshot(job.state);
+            old_states.push(world.use_snapshot(job.state));
             let payload = build_blockdata(&world.block_payload(job.pos));
             let took = started.elapsed();
             if took >= SLOW_BLOCK {
@@ -805,7 +938,7 @@ fn start_block_builder(status: SharedStatus, port: u16) -> Option<BlockBuilder> 
                 st.blocks_built += 1;
                 st.block_us += took.as_micros() as u64;
             }
-            if finished.send(Built { pos: job.pos, version, payload }).is_err() {
+            if finished.send(Built { pos: job.pos, version, payload, _old_states: std::mem::take(&mut old_states) }).is_err() {
                 break;
             }
             if let Some(n) = &nudge {
@@ -969,6 +1102,7 @@ impl Server {
             info!("The administrator is {admin}");
         }
         Self {
+            profile: Profile::default(),
             socket,
             privs,
             auth,
@@ -1014,6 +1148,10 @@ impl Server {
             fire_sounded: Instant::now(),
             tnt_ignited: Instant::now(),
             insects_tended: Instant::now(),
+            views_checked: Instant::now(),
+            estimates: Default::default(),
+            pending_moves: Vec::new(),
+            moves_sent: Instant::now(),
             items_burned: Instant::now(),
             liquids_flowed: Instant::now(),
             lava_cooled: Instant::now(),
@@ -1086,11 +1224,11 @@ impl Server {
             let waited = pass.elapsed();
             match received {
                 Ok((len, from)) => {
-                    self.handle_datagram(&buf[..len], from);
+                    timed!(self, "packets", self.handle_datagram(&buf[..len], from));
                     self.socket.set_nonblocking(true)?;
                     let drained = loop {
                         match self.socket.recv_from(&mut buf) {
-                            Ok((len, from)) => self.handle_datagram(&buf[..len], from),
+                            Ok((len, from)) => timed!(self, "packets", self.handle_datagram(&buf[..len], from)),
                             Err(e) => break e,
                         }
                     };
@@ -1110,6 +1248,16 @@ impl Server {
                 last_wait = Instant::now();
             }
             busy += pass.elapsed().saturating_sub(waited);
+            if cfg!(perf) {
+                self.profile.busy += pass.elapsed().saturating_sub(waited);
+                if self.peers.values().any(|p| p.ready) {
+                    if let Some(text) = self.profile.report() {
+                        info!("{text}");
+                    }
+                } else {
+                    self.profile = Profile::default();
+                }
+            }
             if reported.elapsed() >= Duration::from_millis(250) {
                 status::lock(&self.status).busy_us += busy.as_micros() as u64;
                 busy = Duration::ZERO;
@@ -1321,6 +1469,23 @@ impl Server {
     }
 
     fn handle_command(&mut self, from: SocketAddr, channel: usize, payload: &[u8]) {
+        if !cfg!(perf) {
+            return self.handle_command_inner(from, channel, payload);
+        }
+        let started = Instant::now();
+        self.handle_command_inner(from, channel, payload);
+        let name = match messages::command_id(payload) {
+            Some(TOSERVER_PLAYERPOS) => "playerpos",
+            Some(TOSERVER_INTERACT) => "interact",
+            Some(TOSERVER_GOTBLOCKS) => "gotblocks",
+            Some(TOSERVER_INIT) | Some(TOSERVER_INIT2) | Some(TOSERVER_FIRST_SRP) | Some(TOSERVER_SRP_BYTES_A) | Some(TOSERVER_SRP_BYTES_M) => "login",
+            Some(TOSERVER_INVENTORY_ACTION) | Some(TOSERVER_INVENTORY_FIELDS) => "inventory",
+            _ => "other",
+        };
+        self.profile.command(name, started.elapsed());
+    }
+
+    fn handle_command_inner(&mut self, from: SocketAddr, channel: usize, payload: &[u8]) {
         let Some(cmd) = messages::command_id(payload) else {
             return; // empty ORIGINAL packet: the client's "hello", nothing to do
         };
@@ -2071,20 +2236,40 @@ impl Server {
             return;
         }
 
-        // Relay to the other players, unreliably on channel 1 like the
-        // Luanti server: a lost update is soon replaced by the next.
-        let msg = build_object_messages(&[(
-            id,
-            update_position_message(pp.pos_bs, pp.speed_bs, pp.yaw),
-        )]);
-        // Skipped while the radio is behind: the next update replaces it.
+        // Passed on to the other players with everyone else's, every
+        // SEND_INTERVAL (send_moves); only the latest counts.
+        let msg = update_position_message(pp.pos_bs, pp.speed_bs, pp.yaw);
+        match self.pending_moves.iter_mut().find(|(i, _, _)| *i == id) {
+            Some(entry) => *entry = (id, from, msg),
+            None => self.pending_moves.push((id, from, msg)),
+        }
+    }
+
+    /// Pass the players' latest positions on to each other: for each
+    /// player, everyone else's in one packet, unreliably on channel 1 like
+    /// the Luanti server (which also gathers its objects' messages into one
+    /// TOCLIENT_ACTIVE_OBJECT_MESSAGES each server step); a lost one is
+    /// soon replaced. One packet per position per player instead took a
+    /// third of the server loop's time with five players: each send costs
+    /// the board's network stack about a millisecond.
+    fn send_moves(&mut self) {
+        if self.pending_moves.is_empty() || self.moves_sent.elapsed() < Duration::from_secs_f32(SEND_INTERVAL) {
+            return;
+        }
+        self.moves_sent = Instant::now();
+        let moves = std::mem::take(&mut self.pending_moves);
+        // Skipped while the radio is behind: the next ones replace them.
         if self.congested() {
             return;
         }
-        let datagram = unreliable_datagram(1, &msg);
-        let others: Vec<SocketAddr> = self.peers.iter().filter(|(a, p)| **a != from && p.ready).map(|(a, _)| *a).collect();
-        for addr in others {
-            self.send_raw(addr, &datagram);
+        let players: Vec<SocketAddr> = self.peers.iter().filter(|(_, p)| p.ready).map(|(a, _)| *a).collect();
+        for addr in players {
+            let theirs: Vec<(u16, Vec<u8>)> = moves.iter().filter(|(_, from, _)| *from != addr).map(|(id, _, msg)| (*id, msg.clone())).collect();
+            // A datagram's worth at a time (each is about 50 bytes).
+            for part in theirs.chunks(20) {
+                let datagram = unreliable_datagram(1, &build_object_messages(part));
+                self.send_raw(addr, &datagram);
+            }
         }
     }
 
@@ -3172,7 +3357,8 @@ impl Server {
                 (p.pos_bs[1] / 10.0 + eye).round() as i32,
                 (p.pos_bs[2] / 10.0).round() as i32,
             );
-            let drowning = content::drowning(self.world.node(at));
+            // Only when breath may change: the node lookup is the cost.
+            let drowning = if drown || breathe { content::drowning(self.world.node(at)) } else { 0 };
             let before = p.breath;
             if drown && drowning > 0 {
                 p.breath = p.breath.saturating_sub(1);
@@ -5687,6 +5873,12 @@ impl Server {
         };
         let mut turned = Vec::new();
         for (bx, bz) in columns {
+            // Only terrain already worked out (players have had it): working
+            // it out here, on the busy first core, for every column around
+            // every player, took seconds.
+            if !self.world.block_column_known(bx, bz) {
+                continue;
+            }
             for p in self.world.insects_in(bx, bz) {
                 if !near(p) {
                     continue;
@@ -7127,6 +7319,25 @@ impl Server {
 
     /// Work out which blocks around `pos` (in nodes) the client still needs,
     /// nearest first.
+    /// Plan again the blocks of players whose plan guessed some block
+    /// columns' heights, now that the builder may have worked them out.
+    /// (Only once at least one of the guessed columns has been worked out:
+    /// planning again every second regardless, guessing the same columns
+    /// again each time, took over a second of every ten with five players.)
+    fn replan_estimated_views(&mut self) {
+        let world = &self.world;
+        let due: Vec<(SocketAddr, [f32; 3], i16)> = self
+            .peers
+            .iter()
+            .filter(|(_, p)| p.ready && p.view_estimated && p.view_center.is_some())
+            .filter(|(_, p)| p.estimated_columns.iter().any(|&(bx, bz)| world.height_known(bx, bz)))
+            .map(|(a, p)| (*a, p.pos_bs.map(|v| v / 10.0), p.view_radius))
+            .collect();
+        for (addr, pos, radius) in due {
+            self.plan_blocks(addr, pos, radius);
+        }
+    }
+
     fn plan_blocks(&mut self, addr: SocketAddr, pos: [f32; 3], radius: i16) {
         let center = node_to_block(pos);
         let Some(peer) = self.peers.get(&addr) else {
@@ -7138,6 +7349,7 @@ impl Server {
         // plus the blocks around the player (who may be flying or in a
         // cave).
         let mut wanted = Vec::new();
+        let mut estimated = Vec::new();
         for dx in -radius..=radius {
             for dz in -radius..=radius {
                 if dx * dx + dz * dz > radius * radius + radius {
@@ -7147,7 +7359,22 @@ impl Server {
                 if !world::block_in_world((bx, 0, bz)) {
                     continue;
                 }
-                let (low, high) = self.world.height_range(bx, bz);
+                // Working out a block column's heights here, on the busy
+                // first core, took a quarter of a second for each block a
+                // walking player crossed, while the block builder made the
+                // same columns again. A column not yet worked out gets a
+                // rough range, and the plan is made again once the builder
+                // (building the blocks around the player) has made it.
+                let (low, high) = match self.world.height_range_if_known(bx, bz) {
+                    Some(range) => range,
+                    None => {
+                        estimated.push((bx, bz));
+                        if self.estimates.len() >= ESTIMATES_MAX {
+                            self.estimates = Default::default();
+                        }
+                        *self.estimates.entry((bx, bz)).or_insert_with(|| world::estimated_height_range(bx, bz))
+                    }
+                };
                 let surface = world::block_of(low - 1)..=world::block_of(high + 1);
                 let around = center.1 - 1..=center.1 + 1;
                 let ys = surface.clone().chain(around.filter(|y| !surface.contains(y)));
@@ -7183,6 +7410,8 @@ impl Server {
         peer.pending_blocks = wanted.into();
         peer.view_center = Some(center);
         peer.view_radius = radius;
+        peer.view_estimated = !estimated.is_empty();
+        peer.estimated_columns = estimated;
     }
 
     /// Send players the blocks they still need: from the cache of built
@@ -7509,8 +7738,18 @@ impl Server {
     /// what the server did just before, so it can be traced to its cause
     /// rather than crashing later somewhere unrelated.
     fn check_heap(&mut self, now: Instant) {
+        self.world.trim_if_asked();
         if self.heap_damaged || now.duration_since(self.heap_checked) < HEAP_CHECK_INTERVAL {
             return;
+        }
+        // PSRAM running low: let the caches go, rather than run out (an
+        // allocation that fails stops the board).
+        let free = psram_free_kb();
+        if free < PSRAM_LOW_KB {
+            warn!("PSRAM low ({free} KB free): emptying the terrain, dungeon and built-block caches");
+            world::trim_caches();
+            self.world.trim_if_asked();
+            self.built = Default::default();
         }
         let last_good = self.heap_checked;
         self.heap_checked = now;
@@ -7572,116 +7811,121 @@ impl Server {
     /// packets, send map blocks.
     fn tick(&mut self) {
         let now = Instant::now();
-        self.finish_srp();
-        self.send_blocks();
+        timed!(self, "finish_srp", self.finish_srp());
+        timed!(self, "send_blocks", self.send_blocks());
         if now.duration_since(self.items_stepped) >= ITEM_STEP_INTERVAL {
             let dt = now.duration_since(self.items_stepped).as_secs_f32();
             self.items_stepped = now;
-            self.step_items(dt);
-            self.step_falling(dt);
-            self.step_mobs(dt);
-            self.step_boats(dt);
-            self.step_carts(dt);
+            timed!(self, "step_items", self.step_items(dt));
+            timed!(self, "step_falling", self.step_falling(dt));
+            timed!(self, "step_mobs", self.step_mobs(dt));
+            timed!(self, "step_boats", self.step_boats(dt));
+            timed!(self, "step_carts", self.step_carts(dt));
         }
         if now.duration_since(self.mobs_spawned) >= mobs::SPAWN_EVERY {
             self.mobs_spawned = now;
-            self.spawn_mobs();
+            timed!(self, "spawn_mobs", self.spawn_mobs());
         }
         if self.items.save_if_due() {
-            self.note("items saved", 0);
+            timed!(self, "note", self.note("items saved", 0));
         }
         if self.boats.save_if_due() {
-            self.note("boats saved", 0);
+            timed!(self, "note", self.note("boats saved", 0));
         }
         if self.carts.save_if_due() {
-            self.note("carts saved", 0);
+            timed!(self, "note", self.note("carts saved", 0));
         }
         if self.clock.save_if_due() {
-            self.note("time saved", 0);
+            timed!(self, "note", self.note("time saved", 0));
         }
-        self.check_heap(now);
+        timed!(self, "check_heap", self.check_heap(now));
         if now.duration_since(self.fields_checked) >= farming::soil_check().0 {
             self.fields_checked = now;
-            self.tend_fields();
+            timed!(self, "tend_fields", self.tend_fields());
         }
         if now.duration_since(self.climbers_checked) >= plants::CLIMB_INTERVAL {
             self.climbers_checked = now;
-            self.tend_climbers();
+            timed!(self, "tend_climbers", self.tend_climbers());
         }
-        self.update_power_saving();
-        self.run_timers();
-        self.tend_beds();
-        self.step_breath(now);
-        self.watch_links();
-        self.flush_inventories();
+        timed!(self, "update_power_saving", self.update_power_saving());
+        timed!(self, "run_timers", self.run_timers());
+        timed!(self, "tend_beds", self.tend_beds());
+        timed!(self, "step_breath", self.step_breath(now));
+        timed!(self, "watch_links", self.watch_links());
+        timed!(self, "flush_inventories", self.flush_inventories());
         if now.duration_since(self.liquids_flowed) >= LIQUID_UPDATE {
             self.liquids_flowed = now;
-            self.flow_liquids();
+            timed!(self, "flow_liquids", self.flow_liquids());
             // Lava burns once a second too (PlayerSAO's node damage).
-            self.burn_players();
+            timed!(self, "burn_players", self.burn_players());
             // Node changes go to the SD card once a second.
             self.world.flush_log();
         }
         if now.duration_since(self.grass_spread) >= nature::grass_interval(nature::GRASS_SPREAD_INTERVAL) {
             self.grass_spread = now;
-            self.grow_grass(true);
+            timed!(self, "grow_grass", self.grow_grass(true));
         }
         if now.duration_since(self.grass_covered) >= nature::grass_interval(nature::GRASS_COVERED_INTERVAL) {
             self.grass_covered = now;
-            self.grow_grass(false);
+            timed!(self, "grow_grass", self.grow_grass(false));
         }
         if now.duration_since(self.moss_checked) >= nature::moss_interval() {
             self.moss_checked = now;
-            self.grow_moss();
+            timed!(self, "grow_moss", self.grow_moss());
         }
         // binoculars' and map's cyclic_update.
         if now.duration_since(self.zoom_checked) >= binoculars::BINOCULARS_EVERY {
             self.zoom_checked = now;
             let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
             for addr in all {
-                self.update_zoom(addr);
+                timed!(self, "update_zoom", self.update_zoom(addr));
             }
         }
         if now.duration_since(self.map_checked) >= binoculars::MAP_EVERY {
             self.map_checked = now;
             let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
             for addr in all {
-                self.update_minimap(addr);
+                timed!(self, "update_minimap", self.update_minimap(addr));
             }
         }
         // The fire mod's ABMs and crackle, and burning dropped items.
         let (every, chance) = fire::ignite_every();
         if now.duration_since(self.fire_ignited) >= every {
             self.fire_ignited = now;
-            self.ignite(chance);
+            timed!(self, "ignite", self.ignite(chance));
         }
         let (every, chance) = fire::burn_every();
         if now.duration_since(self.fire_burned) >= every {
             self.fire_burned = now;
-            self.burn_flammables(chance);
+            timed!(self, "burn_flammables", self.burn_flammables(chance));
+        }
+        timed!(self, "send_moves", self.send_moves());
+        if now.duration_since(self.views_checked) >= REPLAN_EVERY {
+            self.views_checked = now;
+            timed!(self, "replan_views", self.replan_estimated_views());
         }
         if now.duration_since(self.insects_tended) >= insects::every() {
             self.insects_tended = now;
-            self.tend_insects();
+            timed!(self, "tend_insects", self.tend_insects());
         }
         if now.duration_since(self.tnt_ignited) >= tnt::IGNITION_EVERY {
             self.tnt_ignited = now;
-            self.ignite_tnt();
+            timed!(self, "ignite_tnt", self.ignite_tnt());
         }
         if now.duration_since(self.fire_sounded) >= fire::SOUND_EVERY {
             self.fire_sounded = now;
-            self.crackle();
+            timed!(self, "crackle", self.crackle());
         }
         if now.duration_since(self.items_burned) >= fire::ITEMS_EVERY {
             self.items_burned = now;
-            self.burn_items();
+            timed!(self, "burn_items", self.burn_items());
         }
         // env_sounds' cyclic_update.
         if now.duration_since(self.sounds_played) >= env_sounds::EVERY {
             self.sounds_played = now;
             let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
             for addr in all {
-                self.play_env_sounds(addr);
+                timed!(self, "play_env_sounds", self.play_env_sounds(addr));
             }
         }
         // The weather's cyclic_update.
@@ -7689,17 +7933,17 @@ impl Server {
             self.weather_set = now;
             let all: Vec<SocketAddr> = self.peers.keys().copied().collect();
             for addr in all {
-                self.set_weather(addr);
+                timed!(self, "set_weather", self.set_weather(addr));
             }
         }
         if now.duration_since(self.lava_cooled) >= LAVA_COOLING {
             self.lava_cooled = now;
-            self.cool_lava();
+            timed!(self, "cool_lava", self.cool_lava());
         }
         if now.duration_since(self.furnaces_stepped) >= FURNACE_STEP_INTERVAL {
             let dt = now.duration_since(self.furnaces_stepped).as_secs_f32();
             self.furnaces_stepped = now;
-            self.step_furnaces(dt);
+            timed!(self, "step_furnaces", self.step_furnaces(dt));
         }
         if now.duration_since(self.bones_checked) >= bones::CHECK_INTERVAL {
             self.bones_checked = now;
@@ -7708,6 +7952,12 @@ impl Server {
             }
         }
 
+        timed!(self, "peers and resends", self.tick_peers(now));
+    }
+
+    /// The tick's last part: saving players and dropping silent ones, then
+    /// resending and sending what is queued.
+    fn tick_peers(&mut self, now: Instant) {
         let mut gone = Vec::new();
         let mut saved = Vec::new();
         let before = self.peers.len();
@@ -7998,6 +8248,23 @@ fn link_state() -> String {
 fn link_state() -> String {
     "(no board state on the PC)".to_string()
 }
+
+/// PSRAM free, in KB (see check_heap). The PC build has no such limit.
+#[cfg(target_os = "espidf")]
+fn psram_free_kb() -> usize {
+    use esp_idf_svc::sys::*;
+    unsafe { heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) / 1024 }
+}
+
+#[cfg(not(target_os = "espidf"))]
+fn psram_free_kb() -> usize {
+    usize::MAX
+}
+
+/// Below this much PSRAM free (KB), the caches are emptied: a hash table
+/// growing can want a few hundred KB in one piece, and failing to get it
+/// stops the board.
+const PSRAM_LOW_KB: usize = 1024;
 
 /// Whether ESP-IDF's heaps are intact (heap_caps_check_integrity_all,
 /// which prints what it finds wrong).

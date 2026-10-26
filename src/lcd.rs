@@ -245,6 +245,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
     let mut page = Page::Overview;
     let button = Button::new();
     let mut cpu = CpuLoad::new();
+    let mut load_log = LoadLog::new(&status);
     let mut stacks_reported: Option<Instant> = None;
     let thermometer = Thermometer::new();
     let mut last = (Instant::now(), 0u64, 0u64);
@@ -335,6 +336,9 @@ fn run(lcd: Lcd, status: SharedStatus) {
         // While BOOT is watched at start-up, a press is the start of a
         // hold, not a page turn: the bar shows it instead. (As a USB drive,
         // a press restarts the board.) The screen stays on meanwhile.
+        if cfg!(perf) {
+            load_log.maybe_log(&status);
+        }
         let pressed = button.pressed() && !window;
         let hold_changed = hold != hold_drawn;
         if hold_changed {
@@ -558,6 +562,99 @@ fn report_stacks() {
         crate::status::problem();
     } else {
         info!("Internal RAM: {free} KB free, lowest so far {lowest} KB");
+    }
+    // PSRAM holds nearly everything else (see PreferPsram in main.rs); if it
+    // runs out, allocations spill into internal RAM. (PERF=1 builds.)
+    if !cfg!(perf) {
+        return;
+    }
+    let caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    let (free, lowest, largest) =
+        unsafe { (heap_caps_get_free_size(caps) / 1024, heap_caps_get_minimum_free_size(caps) / 1024, heap_caps_get_largest_free_block(caps) / 1024) };
+    info!("PSRAM: {free} KB free, lowest so far {lowest} KB, largest block {largest} KB; dungeons kept: {}", crate::dungeons::kept_summary());
+}
+
+/// How often the load is written to the log, averaged over that time.
+const LOAD_LOG_INTERVAL: Duration = Duration::from_secs(10);
+
+/// The load averaged over LOAD_LOG_INTERVAL, for the serial log (in a
+/// PERF=1 build): each
+/// core, the busiest tasks (as a share of one core), and the map blocks
+/// built and sent. Steadier than the Device page's figures, which cover
+/// only the second before each redraw.
+struct LoadLog {
+    at: Instant,
+    clock_us: u64,
+    /// Each task's run time so far (microseconds, wrapping), by handle
+    /// (several tasks share a name: Rust threads are all "pthread").
+    tasks: std::collections::HashMap<usize, u32>,
+    /// blocks_built, block_us and blocks_sent at the last report.
+    blocks: (u64, u64, u64),
+}
+
+impl LoadLog {
+    fn new(status: &SharedStatus) -> Self {
+        let mut log = Self { at: Instant::now(), clock_us: 0, tasks: Default::default(), blocks: (0, 0, 0) };
+        log.take(status);
+        log.clock_us = unsafe { esp_timer_get_time() } as u64;
+        log
+    }
+
+    /// How long each task (summed by name) ran since the last call, and the
+    /// blocks built, their build time and the blocks sent meanwhile.
+    fn take(&mut self, status: &SharedStatus) -> (Vec<(String, u32)>, (u64, u64, u64)) {
+        let mut list: Vec<TaskStatus_t> = Vec::new();
+        let mut total: u32 = 0;
+        let n = unsafe {
+            let capacity = uxTaskGetNumberOfTasks() + 4;
+            list.reserve(capacity as usize);
+            let n = uxTaskGetSystemState(list.as_mut_ptr(), capacity, &mut total);
+            list.set_len(n as usize);
+            n
+        };
+        let mut ran: Vec<(String, u32)> = Vec::new();
+        let mut seen = std::collections::HashMap::new();
+        for t in &list[..n as usize] {
+            let name = unsafe { std::ffi::CStr::from_ptr(t.pcTaskName) }.to_string_lossy().into_owned();
+            let now = t.ulRunTimeCounter as u32;
+            let before = self.tasks.get(&(t.xHandle as usize)).copied().unwrap_or(now);
+            seen.insert(t.xHandle as usize, now);
+            let delta = now.wrapping_sub(before);
+            match ran.iter_mut().find(|(n, _)| *n == name) {
+                Some(entry) => entry.1 += delta,
+                None => ran.push((name, delta)),
+            }
+        }
+        // Tasks that have ended are forgotten.
+        self.tasks = seen;
+        let st = status::lock(status);
+        let blocks = (st.blocks_built, st.block_us, st.blocks_sent);
+        let before = std::mem::replace(&mut self.blocks, blocks);
+        (ran, (blocks.0 - before.0, blocks.1 - before.1, blocks.2 - before.2))
+    }
+
+    fn maybe_log(&mut self, status: &SharedStatus) {
+        if self.at.elapsed() < LOAD_LOG_INTERVAL {
+            return;
+        }
+        let secs = self.at.elapsed().as_secs_f32();
+        self.at = Instant::now();
+        let now_us = unsafe { esp_timer_get_time() } as u64;
+        let span = now_us.saturating_sub(self.clock_us).max(1) as f32;
+        self.clock_us = now_us;
+        let (mut ran, (built, built_us, sent)) = self.take(status);
+        let share = |us: u32| us as f32 / span * 100.0;
+        let idle = |name: &str| ran.iter().find(|(n, _)| n == name).map_or(0.0, |(_, us)| share(*us));
+        let cores = format!("core 0 {:.0}%, core 1 {:.0}%", 100.0 - idle("IDLE0"), 100.0 - idle("IDLE1"));
+        ran.retain(|(n, us)| !n.starts_with("IDLE") && share(*us) >= 1.0);
+        ran.sort_by_key(|(_, us)| std::cmp::Reverse(*us));
+        let tasks: Vec<String> = ran.iter().take(6).map(|(n, us)| format!("{n} {:.0}%", share(*us))).collect();
+        let each = if built > 0 { format!(", {:.0} ms each", built_us as f32 / built as f32 / 1000.0) } else { String::new() };
+        info!(
+            "Load over {secs:.0} s: {cores} | {} | blocks: {built} built{each}, {sent} sent ({:.1}/s)",
+            tasks.join(", "),
+            sent as f32 / secs
+        );
     }
 }
 

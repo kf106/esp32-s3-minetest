@@ -35,7 +35,9 @@ use crate::world::CONTENT_AIR;
 /// still fit around them.
 /// 4: dungeons (dungeons.rs).
 /// 5: rivers, the icesheet (with its cave ice), and emergent jungle trees.
-pub const GENERATOR_VERSION: u32 = 6;
+/// 6: (no note was kept).
+/// 7: each mapchunk's dungeons kept within a box inside it (dungeons.rs).
+pub const GENERATOR_VERSION: u32 = 7;
 
 const SEED_HILLS: u32 = 0x1A2B_3C4D;
 const SEED_MOUNTAINS: u32 = 0x5E6F_7081;

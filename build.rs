@@ -13,6 +13,12 @@
 //! gives nothing more, and a new value (TEST=2, and so on) hands out a fresh
 //! kit. Build normally for play.
 //!
+//! `PERF=1 cargo run --release` adds performance logs for load testing:
+//! every 10 s, the load on each core, the busiest tasks and the map blocks
+//! built and sent ("Load over 10 s"), where the main loop's time went
+//! ("Main loop over 10 s"), and every minute PSRAM use and the dungeons
+//! kept. Without it, none of this is measured.
+//!
 //! `BOARD=es3c28p cargo run --release` builds for LCDwiki's ES3C28P or
 //! ES3N28P instead of the Waveshare ESP32-S3-LCD-1.47 (see src/board.rs).
 //! Changing the board needs no `cargo clean`.
@@ -45,6 +51,14 @@ fn main() {
         // build, so each reset build gets a fresh token.
         println!("cargo:rerun-if-changed=.reset-sd-every-build");
         println!("cargo:warning=This firmware will delete the accounts, world and players on the SD card when it starts");
+    }
+
+    // PERF=1: performance logs (cfg(perf)), see the comment at the top.
+    println!("cargo:rustc-check-cfg=cfg(perf)");
+    println!("cargo:rerun-if-env-changed=PERF");
+    if std::env::var("PERF").is_ok_and(|v| v == "1") {
+        println!("cargo:rustc-cfg=perf");
+        println!("cargo:warning=This firmware writes performance logs every 10 s (PERF=1)");
     }
 
     println!("cargo:rerun-if-env-changed=TEST");

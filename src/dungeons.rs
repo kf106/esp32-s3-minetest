@@ -19,22 +19,28 @@
 //!
 //! Luanti generates the map a mapchunk at a time: 5x5x5 map blocks, 80
 //! nodes a side, starting 32 nodes below the origin. Each mapchunk with
-//! stone in it may hold dungeons ("dungeons" noise), built in the
-//! mapchunk and up to 16 nodes into its neighbours: rooms joined by
+//! stone in it may hold dungeons ("dungeons" noise): rooms joined by
 //! corridors, some with stairs, walled in cobblestone that is mossy in
 //! places (desert stone in the desert). They are only dug into the
 //! ground: air, liquids and anything not part of the ground are left
 //! alone, so they never stand in the open, though a room may break into a
 //! cave or come up to the surface.
 //!
+//! Unlike Luanti, where they reach up to 16 nodes into the neighbouring
+//! mapchunks, a mapchunk's dungeons are built within a box of 3x2x3 map
+//! blocks (48x32x48 nodes) inside it, placed at random in the mapchunk
+//! (from its position, so the same every time): a tighter warren of the
+//! same rooms and corridors. On the board that matters: a map block needs
+//! only its own mapchunk's dungeons, and only if it is in the box (18 of
+//! the 125), so most blocks need no dungeon work at all; and a mapchunk's
+//! dungeons, worked out once and kept, take less memory. (In Luanti a
+//! block on a mapchunk's edge needed up to eight mapchunks' dungeons
+//! worked out, at up to a second or more each on the board.)
+//!
 //! Here every node is a pure function of its position, so a mapchunk's
-//! dungeons are worked out on their own the first time any node they
-//! might reach is wanted, against the terrain without dungeons, and kept
-//! (a few mapchunks' worth) as the nodes they change. Where the dungeons
-//! of two mapchunks overlap, an opening of either wins over a wall of the
-//! other, so neither blocks the other's corridors. Luanti builds each
-//! against whatever its neighbours had already, which depends on the
-//! order players explored in.
+//! dungeons are worked out on their own the first time a block in its box
+//! is wanted, against the terrain without dungeons, and kept (a few
+//! dozen mapchunks' worth) as the nodes they change.
 //!
 //! dungeon_loot puts up to two chests in a mapchunk's rooms, against a
 //! wall. Their contents depend on their position and depth, and are
@@ -46,7 +52,7 @@ use crate::fasthash::{FastMap, FastSet};
 use crate::inventory::{self, Stack};
 use crate::terrain::{self, Biome, NoiseParams};
 use crate::world::{BlockPos, NodePos, CONTENT_AIR};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Condvar, Mutex};
 
 /// minetest_game's mossy cobblestone, which the dungeons are partly built
 /// of, and its wall; its stairs and slabs are stairs::MOSSY.
@@ -57,11 +63,10 @@ pub const WALL_MOSSYCOBBLE: u16 = MOSSYCOBBLE + 1;
 /// its offset of -2 blocks).
 const CHUNK: i32 = 80;
 const CHUNK_OFFSET: i32 = -32;
-/// How far dungeons reach into the neighbouring mapchunks (the
-/// VoxelManipulator's one block of overgeneration all round).
-const MARGIN: i32 = 16;
-/// The side of the area a mapchunk's dungeons are built in.
-const AREA: i32 = CHUNK + 2 * MARGIN;
+/// The box in a mapchunk that its dungeons are built in, in map blocks
+/// and in nodes (see the top of this file).
+const BOX_BLOCKS: (i32, i32, i32) = (3, 2, 3);
+const BOX: (i32, i32, i32) = (BOX_BLOCKS.0 * 16, BOX_BLOCKS.1 * 16, BOX_BLOCKS.2 * 16);
 
 const SEED: u32 = 0x0D06_E011;
 
@@ -84,11 +89,29 @@ fn chunk_start(c: i32) -> i32 {
     c * CHUNK + CHUNK_OFFSET
 }
 
-/// The mapchunks whose dungeons may reach the map block `b` (along one
-/// axis): those whose area overlaps it.
-fn chunks_reaching_block(b: i16) -> std::ops::RangeInclusive<i32> {
-    let (lo, hi) = (b as i32 * 16, b as i32 * 16 + 15);
-    chunk_of(lo - MARGIN)..=chunk_of(hi + MARGIN)
+/// The lowest corner of the box mapchunk `c`'s dungeons are built in: at
+/// a whole number of map blocks into the mapchunk, chosen from its
+/// position, so that the boxes of neighbouring mapchunks fall in
+/// different places and the dungeons don't line up.
+fn box_min(c: (i32, i32, i32)) -> V {
+    let h = terrain::hash(c.0, c.1, c.2, SEED ^ 0xB0C5);
+    let spare = (5 - BOX_BLOCKS.0, 5 - BOX_BLOCKS.1, 5 - BOX_BLOCKS.2);
+    let (ox, oy, oz) = (
+        (h % (spare.0 as u32 + 1)) as i32,
+        (h / 7 % (spare.1 as u32 + 1)) as i32,
+        (h / 61 % (spare.2 as u32 + 1)) as i32,
+    );
+    (chunk_start(c.0) + ox * 16, chunk_start(c.1) + oy * 16, chunk_start(c.2) + oz * 16)
+}
+
+/// The mapchunk map block `b` is in, if it is in that mapchunk's dungeon
+/// box: only then may it hold dungeon nodes.
+fn chunk_with_box(b: BlockPos) -> Option<(i32, i32, i32)> {
+    let p = (b.0 as i32 * 16, b.1 as i32 * 16, b.2 as i32 * 16);
+    let c = (chunk_of(p.0), chunk_of(p.1), chunk_of(p.2));
+    let m = box_min(c);
+    let inside = (m.0..m.0 + BOX.0).contains(&p.0) && (m.1..m.1 + BOX.1).contains(&p.1) && (m.2..m.2 + BOX.2).contains(&p.2);
+    inside.then_some(c)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,8 +183,9 @@ struct Cell {
 }
 
 struct Gen<'a> {
-    /// The area's lowest corner.
+    /// The area's lowest corner, and its size: the dungeon box.
     min: V,
+    size: V,
     dp: Params,
     random: PseudoRandom,
     blockseed: u32,
@@ -182,7 +206,7 @@ fn preserved(id: u16) -> bool {
 
 impl Gen<'_> {
     fn contains(&self, p: V) -> bool {
-        (0..AREA).contains(&(p.0 - self.min.0)) && (0..AREA).contains(&(p.1 - self.min.1)) && (0..AREA).contains(&(p.2 - self.min.2))
+        (0..self.size.0).contains(&(p.0 - self.min.0)) && (0..self.size.1).contains(&(p.1 - self.min.1)) && (0..self.size.2).contains(&(p.2 - self.min.2))
     }
 
     fn cell(&mut self, p: V) -> Cell {
@@ -216,8 +240,10 @@ impl Gen<'_> {
     fn generate(&mut self) {
         // The terrain's flags are worked out as nodes are looked at
         // (`cell`), rather than for the whole area first.
+        // (Luanti starts the first room clear of the margin it builds into
+        // in the neighbours; here there is none.)
         for _ in 0..self.dp.num_dungeons {
-            self.make_dungeon((16, 16, 16));
+            self.make_dungeon((0, 0, 0));
         }
         // Some of the walls in the alternative material.
         if let Some(alt) = self.dp.alt_wall {
@@ -250,9 +276,9 @@ impl Gen<'_> {
                 self.random_size(self.dp.room_size_min, self.dp.room_size_max)
             };
             // start_padding: not starting in a neighbouring mapchunk.
-            let z = self.random.range(0, AREA - roomsize.2 - start_padding.2);
-            let y = self.random.range(0, AREA - roomsize.1 - start_padding.1);
-            let x = self.random.range(0, AREA - roomsize.0 - start_padding.0);
+            let z = self.random.range(0, (self.size.2 - roomsize.2 - start_padding.2).max(0));
+            let y = self.random.range(0, (self.size.1 - roomsize.1 - start_padding.1).max(0));
+            let x = self.random.range(0, (self.size.0 - roomsize.0 - start_padding.0).max(0));
             roomplace = add(add(self.min, start_padding), (x, y, z));
             // All of it in the ground (it stops at the first node that
             // isn't, which Luanti's check carries on past to the same end).
@@ -623,8 +649,8 @@ impl Chunk {
     }
 }
 
-/// Whether a dungeon node is a wall (which the other mapchunks' openings
-/// win over).
+/// Whether a dungeon node is a wall (for the tests).
+#[cfg(test)]
 fn is_wall(id: u16) -> bool {
     matches!(id, CONTENT_COBBLE | MOSSYCOBBLE | CONTENT_DESERT_STONE | content::CONTENT_SANDSTONE_BRICK | content::CONTENT_ICE)
 }
@@ -688,7 +714,8 @@ pub fn generate(c: (i32, i32, i32), terrain: &mut dyn FnMut(NodePos) -> u16) -> 
         corridor_len_max: 13,
     };
     let mut gen = Gen {
-        min: sub(node_min, (MARGIN, MARGIN, MARGIN)),
+        min: box_min(c),
+        size: BOX,
         dp,
         random: PseudoRandom(blockseed.wrapping_add(2) as i32),
         blockseed,
@@ -789,17 +816,36 @@ fn is_solid(gen: &mut Gen, p: V) -> bool {
 // Shared between the server and the block builder
 // ---------------------------------------------------------------------------
 
-/// How many mapchunks' dungeons are kept. A player's surroundings span a
-/// few; each is a few thousand nodes (tens of KB). The PC build keeps far
-/// more, so they aren't worked out again as players come and go.
-const KEEP: usize = if cfg!(pc) { 256 } else { 24 };
+/// How many mapchunks' dungeons are kept, and how many of their nodes in
+/// all (6 bytes each). A map block can need up to eight mapchunks (those
+/// whose dungeons reach into it), so one player's surroundings use a few
+/// dozen, and several players exploring apart use well over a hundred;
+/// keeping too few means working the same ones out again and again, at up
+/// to a second or more each on the board. Many have no dungeons (above the
+/// ground) and cost next to nothing, so the node budget is what limits
+/// the board: 120,000 nodes is about 0.7 MB of PSRAM. The PC build keeps
+/// far more.
+const KEEP: usize = if cfg!(pc) { 4096 } else { 128 };
+const KEEP_NODES: usize = if cfg!(pc) { 20_000_000 } else { 120_000 };
+
+/// How many mapchunks are kept and their nodes, for the log.
+#[cfg_attr(any(not(target_os = "espidf"), not(perf)), allow(dead_code))]
+pub fn kept_summary() -> String {
+    let guard = CHUNKS.lock().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(kept) => format!("{} mapchunks, {} nodes", kept.map.len(), kept.nodes),
+        None => "none".to_string(),
+    }
+}
 
 /// The kept mapchunks, with when each was last used, and those being
 /// worked out now.
 #[derive(Default)]
 struct Kept {
     uses: u32,
-    map: FastMap<(i32, i32, i32), (u32, Arc<Chunk>)>,
+    map: FastMap<(i32, i32, i32), (u32, Chunk)>,
+    /// The kept mapchunks' nodes, in all.
+    nodes: usize,
     busy: FastSet<(i32, i32, i32)>,
 }
 
@@ -820,29 +866,43 @@ impl Drop for Busy {
     }
 }
 
-/// The dungeons of mapchunk `c`, made with `terrain` if they aren't kept.
-/// Each is worked out once: a thread that wants one the other thread is
-/// working out waits for it.
-pub fn chunk(c: (i32, i32, i32), terrain: &mut dyn FnMut(NodePos) -> u16) -> Arc<Chunk> {
+/// Forget every kept mapchunk (memory is running low: see
+/// world::trim_caches). They are worked out again as they are needed.
+pub fn trim() {
+    if let Some(kept) = CHUNKS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        kept.map = FastMap::default();
+        kept.nodes = 0;
+    }
+}
+
+/// Look at the dungeons of mapchunk `c` with `f`, working them out with
+/// `terrain` if they aren't kept. Each is worked out once: a thread that
+/// wants one the other thread is working out waits for it. `f` runs with
+/// the cache locked, and gets the kept chunk itself, not a shared
+/// reference to it: on the ESP32-S3 an atomic operation on PSRAM isn't
+/// atomic between the two cores, so an Arc's count, changed from both,
+/// gets lost, and what it holds is freed while still in use (that
+/// crashed the board). What `f` needs is copied out instead.
+pub fn with_chunk<R>(c: (i32, i32, i32), terrain: &mut dyn FnMut(NodePos) -> u16, f: impl FnOnce(&Chunk) -> R) -> R {
     let busy = {
-        let mut guard = CHUNKS.lock().unwrap();
+        let mut guard = CHUNKS.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             let kept = guard.get_or_insert_with(Default::default);
             kept.uses += 1;
             let uses = kept.uses;
             if let Some(found) = kept.map.get_mut(&c) {
                 found.0 = uses;
-                return found.1.clone();
+                return f(&found.1);
             }
             if !kept.busy.contains(&c) {
                 kept.busy.insert(c);
                 break Busy(c);
             }
-            guard = DONE.wait(guard).unwrap();
+            guard = DONE.wait(guard).unwrap_or_else(|e| e.into_inner());
         }
     };
     let started = std::time::Instant::now();
-    let made = Arc::new(generate(c, terrain));
+    let made = generate(c, terrain);
     if made.nodes() > 0 {
         log::info!(
             "Dungeons in mapchunk {c:?}: {} rooms, {} nodes, {} chests, worked out in {} ms",
@@ -852,21 +912,27 @@ pub fn chunk(c: (i32, i32, i32), terrain: &mut dyn FnMut(NodePos) -> u16) -> Arc
             started.elapsed().as_millis()
         );
     }
-    {
-        let mut guard = CHUNKS.lock().unwrap();
+    let result = {
+        let mut guard = CHUNKS.lock().unwrap_or_else(|e| e.into_inner());
         let kept = guard.get_or_insert_with(Default::default);
         kept.uses += 1;
-        if kept.map.len() >= KEEP {
-            // Forget the one used longest ago.
-            if let Some(oldest) = kept.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k) {
-                kept.map.remove(&oldest);
+        // Forget those used longest ago until there is room.
+        while !kept.map.is_empty() && (kept.map.len() >= KEEP || kept.nodes + made.nodes() > KEEP_NODES) {
+            let Some(oldest) = kept.map.iter().min_by_key(|(_, (t, _))| *t).map(|(k, _)| *k) else {
+                break;
+            };
+            if let Some((_, gone)) = kept.map.remove(&oldest) {
+                kept.nodes -= gone.nodes();
             }
         }
+        let result = f(&made);
         let uses = kept.uses;
-        kept.map.insert(c, (uses, made.clone()));
-    }
+        kept.nodes += made.nodes();
+        kept.map.insert(c, (uses, made));
+        result
+    };
     drop(busy);
-    made
+    result
 }
 
 #[cfg(test)]
@@ -886,7 +952,7 @@ mod shared_tests {
                 std::thread::sleep(std::time::Duration::from_micros(1));
                 content::CONTENT_STONE
             };
-            chunk(c, &mut stone).nodes()
+            with_chunk(c, &mut stone, |chunk| chunk.nodes())
         };
         let a = std::thread::spawn(run);
         let b = std::thread::spawn(run);
@@ -894,7 +960,7 @@ mod shared_tests {
         assert_eq!(a, b);
         let once = CALLS.load(Ordering::Relaxed);
         let mut stone = |_: NodePos| content::CONTENT_STONE;
-        let _ = chunk(c, &mut stone);
+        with_chunk(c, &mut stone, |_| ());
         // A third call finds it kept; the two together made it once (a
         // single generate reads the same nodes as this count).
         let mut count = 0;
@@ -907,38 +973,15 @@ mod shared_tests {
     }
 }
 
-/// The nodes the dungeons change in map block `b`, sorted by index, from
-/// every mapchunk whose dungeons reach it.
+/// The nodes the dungeons change in map block `b`, sorted by index: none
+/// unless the block is in its mapchunk's dungeon box (which costs nothing
+/// to find out); otherwise from that mapchunk's dungeons, worked out the
+/// first time.
 pub fn block(b: BlockPos, terrain: &mut dyn FnMut(NodePos) -> u16) -> Vec<Placed> {
-    let mut out: Vec<Placed> = Vec::new();
-    let mut sources = 0;
-    for cz in chunks_reaching_block(b.2) {
-        for cy in chunks_reaching_block(b.1) {
-            for cx in chunks_reaching_block(b.0) {
-                let chunk = chunk((cx, cy, cz), terrain);
-                let Some(placed) = chunk.blocks.get(&b) else {
-                    continue;
-                };
-                sources += 1;
-                if sources == 1 {
-                    out.extend_from_slice(placed);
-                    continue;
-                }
-                // Openings win over walls.
-                for &p in placed.iter() {
-                    match out.binary_search_by_key(&p.index, |q| q.index) {
-                        Ok(i) => {
-                            if is_wall(out[i].id) && !is_wall(p.id) {
-                                out[i] = p;
-                            }
-                        }
-                        Err(i) => out.insert(i, p),
-                    }
-                }
-            }
-        }
-    }
-    out
+    let Some(c) = chunk_with_box(b) else {
+        return Vec::new();
+    };
+    with_chunk(c, terrain, |chunk| chunk.blocks.get(&b).map(|p| p.to_vec())).unwrap_or_default()
 }
 
 /// The dungeon's node at a position of a block's list (from `block`).
@@ -1136,11 +1179,28 @@ mod tests {
     #[test]
     fn mapchunks() {
         assert_eq!((chunk_of(-32), chunk_of(47), chunk_of(48), chunk_of(-33)), (0, 0, 1, -1));
-        // Block 0 (nodes 0..15) is reached by mapchunk 0 only; block 2
-        // (32..47) by 0 and 1 (which starts at 48, reaching down to 32).
-        assert_eq!(chunks_reaching_block(0), 0..=0);
-        assert_eq!(chunks_reaching_block(2), 0..=1);
-        assert_eq!(chunks_reaching_block(-3), -1..=0);
+        // Each mapchunk's box is in it, whole map blocks in, and holds
+        // 3x2x3 of its 125 blocks; the boxes move about from mapchunk to
+        // mapchunk.
+        let mut places = std::collections::HashSet::new();
+        for c in [(0, 0, 0), (1, 0, 0), (0, -1, 3), (-7, 2, 9), (12, -4, -5), (3, 3, 3)] {
+            let m = box_min(c);
+            places.insert((m.0 - chunk_start(c.0), m.1 - chunk_start(c.1), m.2 - chunk_start(c.2)));
+            let mut inside = 0;
+            for bz in 0..5 {
+                for by in 0..5 {
+                    for bx in 0..5 {
+                        let b = ((chunk_start(c.0) / 16 + bx) as i16, (chunk_start(c.1) / 16 + by) as i16, (chunk_start(c.2) / 16 + bz) as i16);
+                        if let Some(found) = chunk_with_box(b) {
+                            assert_eq!(found, c);
+                            inside += 1;
+                        }
+                    }
+                }
+            }
+            assert_eq!(inside, 18, "{c:?}");
+        }
+        assert!(places.len() > 1, "the boxes are all in the same place");
     }
 
     /// Solid stone everywhere: dungeons have room, and they come out the
@@ -1164,9 +1224,9 @@ mod tests {
                     ids.insert(p.id);
                     let (x, y, z) = (p.index as i32 % 16, p.index as i32 / 16 % 16, p.index as i32 / 256);
                     let node = (bp.0 as i32 * 16 + x, bp.1 as i32 * 16 + y, bp.2 as i32 * 16 + z);
-                    // Within the mapchunk and its margin.
-                    let min = (chunk_start(c) - MARGIN, chunk_start(-3) - MARGIN, chunk_start(7) - MARGIN);
-                    assert!((0..AREA).contains(&(node.0 - min.0)) && (0..AREA).contains(&(node.1 - min.1)) && (0..AREA).contains(&(node.2 - min.2)));
+                    // Within the mapchunk's dungeon box.
+                    let min = box_min((c, -3, 7));
+                    assert!((0..BOX.0).contains(&(node.0 - min.0)) && (0..BOX.1).contains(&(node.1 - min.1)) && (0..BOX.2).contains(&(node.2 - min.2)));
                 }
             }
             // Walls of the biome's kind: cobblestone, or sandstone brick in the

@@ -100,6 +100,9 @@ const HOTSPOT_MAX_DEVICES: u16 = 8;
 
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
+    // The USB pins to the serial port, whatever a USB drive session before
+    // the last restart left set (see give_usb_to_serial).
+    give_usb_to_serial();
     esp_idf_svc::log::EspLogger::initialize_default();
     log_heap("start");
 
@@ -575,17 +578,19 @@ fn usb_drive(storage: DriveStorage, status: &status::SharedStatus) -> ! {
     unsafe { sys::esp_restart() }
 }
 
-/// Hand the chip's USB pins back to the USB-Serial-JTAG controller: clear
-/// RTC_CNTL_USB_CONF_REG's SW_HW_USB_PHY_SEL (bit 20: software chooses)
-/// and SW_USB_PHY_SEL (bit 19: the USB controller has them), as in
-/// ESP-IDF's usb_serial_jtag_ll.h and usb_wrap_ll.h for the ESP32-S3.
+/// Hand the chip's USB pins back to the USB-Serial-JTAG controller, as
+/// ESP-IDF's usb_serial_jtag_ll_phy_enable_external(false) does for the
+/// ESP32-S3: in RTC_CNTL_USB_CONF_REG, SW_HW_USB_PHY_SEL (bit 20) set, so
+/// software chooses, and SW_USB_PHY_SEL (bit 19) clear, for the serial
+/// port. The register is in the RTC domain, which a restart (or flashing
+/// over USB) doesn't reset; only cutting the power does.
 fn give_usb_to_serial() {
     const RTC_CNTL_USB_CONF_REG: *mut u32 = (0x6000_8000 + 0x120) as *mut u32;
     const SW_HW_USB_PHY_SEL: u32 = 1 << 20;
     const SW_USB_PHY_SEL: u32 = 1 << 19;
     unsafe {
         let v = RTC_CNTL_USB_CONF_REG.read_volatile();
-        RTC_CNTL_USB_CONF_REG.write_volatile(v & !(SW_HW_USB_PHY_SEL | SW_USB_PHY_SEL));
+        RTC_CNTL_USB_CONF_REG.write_volatile((v | SW_HW_USB_PHY_SEL) & !SW_USB_PHY_SEL);
     }
 }
 

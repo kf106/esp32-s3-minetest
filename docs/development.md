@@ -87,7 +87,15 @@ python3 tools/loadtest.py 192.168.68.137 --bots 5 --minutes 10
 Every 10 seconds it prints each bot's distance walked, map blocks received
 (in total, per second, and in KB per second), round trip time, longest silence from the
 server, and packets it had to resend. Watch the board's Device page
-meanwhile for CPU load and memory. The bots are saved like any player, so
+meanwhile for CPU load and memory, or, steadier, build the firmware with
+`PERF=1` and watch its serial log. Every 10 seconds a "Load over 10 s"
+line gives each core's load, the busiest tasks (`main` is the server,
+`blocks` the block builder, `wifi` and `tiT` the network), and the map
+blocks built (with the average time each) and sent; a "Main loop over
+10 s" line says where the server's own time went (packets, with the main
+client commands broken out, and each part of its regular tick); and every
+minute a "PSRAM" line gives the memory free and the dungeons kept. The
+PC build takes `PERF=1` too. Without it nothing is measured. The bots are saved like any player, so
 each run carries on in new terrain. Real players count towards the limit
 of six; a bot over the limit is turned away. `--help` lists the other
 options (speed, how far apart they join, view range, names).
@@ -113,3 +121,4 @@ place, before and after a change.
 - **The Xtensa argument limit.** Functions here are kept to at most six argument words, counting a hidden pointer for large return values. A seventh argument is passed on the stack, and in one build it arrived corrupted, which crashed the server on the first packet. Group arguments into a struct instead; `server::Setup` is the example.
 - **Two cores.** The server loop (network and game logic) runs on core 0, next to the Wi-Fi driver. Map blocks, the expensive part, are generated and compressed by a thread on core 1, working from a snapshot of the world's changes. Built blocks are cached, so players near each other share them. A block the world changed around while it was being built is built again.
 - **Memory.** The global allocator in `main.rs` puts the server's data in PSRAM. Left to the default, small allocations fill the internal RAM, and then Wi-Fi sends fail and threads can't start.
+- **No Arc shared between the cores.** On the ESP32-S3 an atomic operation on PSRAM isn't atomic between the two cores, and since nearly everything is in PSRAM, that includes the counts in an `Arc`. An `Arc` cloned or dropped on both cores loses counts, and what it holds is freed while still in use: the board then crashes somewhere unrelated, usually after printing nonsense. So what the two cores share is shared by value, under a lock: the dungeons (`dungeons::with_chunk` copies out what is needed) and the terrain's block columns (`world::shared_block_column` hands each thread its own copy). The world snapshots the block builder works from are the one `Arc` that crosses over, and only the server loop clones or drops them: the builder hands each back with the next finished block. Channels are fine with one sender and one receiver; anything else that crosses between the cores should follow the same rules. The PC build can't catch this, since its atomics work everywhere.

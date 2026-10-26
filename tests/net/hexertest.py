@@ -96,7 +96,9 @@ print("killed: iron lump")
 # At dawn it vanishes in smoke.
 watch(c, 6)
 ask(c, "/time 6:00", "")
-ask(c, "/mobs spawn hexer", "A hexer comes"); watch(c, 0.5)
+ask(c, "/mobs spawn hexer", "A hexer comes")
+# (Its object can come a moment after the chat line, on a busy run.)
+watch(c, 3, until=lambda: hexers())
 hexer = max(hexers())
 del punched[:]
 watch(c, 15, until=lambda: hexer in gone)

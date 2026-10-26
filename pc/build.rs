@@ -4,6 +4,12 @@
 // the board's small caches; nor with MINETEST_SMALL_CACHES=1 set.
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(pc)");
+    // PERF=1: performance logs, as for the board (see ../build.rs).
+    println!("cargo:rustc-check-cfg=cfg(perf)");
+    println!("cargo:rerun-if-env-changed=PERF");
+    if std::env::var("PERF").is_ok_and(|v| v == "1") {
+        println!("cargo:rustc-cfg=perf");
+    }
     println!("cargo:rerun-if-env-changed=MINETEST_SMALL_CACHES");
     let wide = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref() == Ok("64");
     if wide && std::env::var_os("MINETEST_SMALL_CACHES").is_none() {

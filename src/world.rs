@@ -57,15 +57,38 @@ const LIGHT_SUN: u8 = 15;
 /// spare: once five bots walking outwards ran it out.
 ///
 /// Block columns are about 4 KB each (256 columns of 12 bytes, and tree
-/// tops). The block builder makes the terrain, so it keeps more; the
-/// server's own world only looks up nodes near players. When full, the
-/// older half goes.
+/// tops). They are generated terrain only, the same for every world, so
+/// the block builder and the server's own world share one cache
+/// (SHARED_COLUMNS): each is worked out once, by whichever thread wants it
+/// first. (Kept apart, the server loop worked out again, on the busy
+/// first core, the columns the builder had just made, and its own small
+/// cache couldn't hold five players' surroundings, so it made the same
+/// ones over and over: seconds every 10 s with five bots.) Each world also
+/// keeps the ones it used last (WORLD_COLUMNS), so that looking up a node
+/// needn't take the shared cache's lock. When full, the older half goes.
 ///
 /// The PC build (cfg(pc)) has memory to spare, and keeps far more (with
 /// the built blocks and dungeons, up to about 60 MB in all), so a player
 /// going back and forth finds their surroundings already worked out.
-const BUILDER_COLUMNS: usize = if cfg!(pc) { 4096 } else { 384 }; // about 16 MB, or 1.6 MB
-const SERVER_COLUMNS: usize = if cfg!(pc) { 1024 } else { 128 }; // about 4 MB, or 0.5 MB
+const SHARED_COLUMNS: usize = if cfg!(pc) { 5120 } else { 448 }; // about 20 MB, or 1.8 MB
+/// Each world's own copies (see shared_block_column), about 4 KB each.
+const WORLD_COLUMNS: usize = if cfg!(pc) { 1024 } else { 32 };
+
+/// Raised (by trim_caches) when memory runs low: each world empties its
+/// own caches when it next sees it changed. (A static, so in internal RAM,
+/// where atomic operations work between the cores.)
+static TRIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Memory is running low: empty the shared terrain and dungeon caches now,
+/// and have every world empty its own (see TRIMS). Everything in them is
+/// worked out again as it is needed.
+pub fn trim_caches() {
+    if let Some(shared) = COLUMNS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        shared.map = FastMap::default();
+    }
+    dungeons::trim();
+    TRIMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 /// Cave noise samples, 20 bytes each. A hash table doubles once it is 7/8
 /// full, so this stays under 7/8 of 32768: the table is 0.7 MB, and never
 /// grows to the next size (2.75 MB, needed in one piece). On the PC, under
@@ -75,8 +98,13 @@ const CAVE_CACHE_MAX: usize = if cfg!(pc) { 458_000 } else { 28_000 };
 /// (16 bytes each; under 7/8 of 4096, or of 65536 on the PC, for the same
 /// reason).
 const HEIGHT_CACHE_MAX: usize = if cfg!(pc) { 57_000 } else { 3_500 };
-/// Map blocks whose dungeon nodes are kept (most have none).
+/// Map blocks whose dungeon nodes are kept (most have none), and how many
+/// of their nodes in all (6 bytes each): a block deep in a dungeon has a
+/// few thousand, and 4,096 of those (once some megabytes, which helped
+/// run the board out of memory) aren't needed, since the dungeons
+/// themselves are kept too (dungeons.rs).
 const DUNGEON_CACHE_MAX: usize = if cfg!(pc) { 65_536 } else { 4_096 };
+const DUNGEON_CACHE_NODES: usize = if cfg!(pc) { 10_000_000 } else { 60_000 };
 
 /// How far torch light reaches: it starts at TORCH_LIGHT and fades by one
 /// per node, so nodes further than this get none.
@@ -117,6 +145,7 @@ pub fn block_in_world(p: BlockPos) -> bool {
 
 /// The 16x16 columns of a block column, their height range, and the trees
 /// growing in or into it.
+#[derive(Clone)]
 struct BlockColumn {
     columns: Vec<Column>, // index z * 16 + x
     min_height: i32,
@@ -134,6 +163,39 @@ struct BlockColumn {
     /// highest of them.
     insects: Vec<(NodePos, u16)>,
     max_insect: i32,
+}
+
+/// The block columns shared by every world (see SHARED_COLUMNS), each
+/// with when it was last made or used, and those being worked out now.
+#[derive(Default)]
+struct SharedColumns {
+    uses: u32,
+    /// Kept by value: each thread gets its own copy (see shared_block_column).
+    map: FastMap<(i16, i16), (u32, BlockColumn)>,
+    busy: FastSet<(i16, i16)>,
+}
+
+static COLUMNS: std::sync::Mutex<Option<SharedColumns>> = std::sync::Mutex::new(None);
+/// Signalled when a block column has been worked out.
+static COLUMN_MADE: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Marks a block column as no longer being worked out, even if working it
+/// out panicked, and wakes whoever waits for it.
+struct MakingColumn((i16, i16));
+
+impl Drop for MakingColumn {
+    fn drop(&mut self) {
+        if let Some(shared) = COLUMNS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            shared.busy.remove(&self.0);
+        }
+        COLUMN_MADE.notify_all();
+    }
+}
+
+/// Whether a block column has been worked out already (it is in the shared
+/// cache), so using it costs next to nothing.
+pub fn column_ready(bx: i16, bz: i16) -> bool {
+    COLUMNS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.map.contains_key(&(bx, bz)))
 }
 
 impl BlockColumn {
@@ -240,6 +302,10 @@ pub struct World {
     /// The nodes dungeons change in each map block (None: none), as
     /// dungeons::block gives them.
     dungeon_blocks: RefCell<FastMap<BlockPos, Option<Arc<[dungeons::Placed]>>>>,
+    /// Their nodes, in all.
+    dungeon_nodes: Cell<usize>,
+    /// The trim_caches count this world has acted on.
+    trimmed: Cell<u32>,
     /// Places where liquid may flow (liquids.rs).
     liquid_queue: liquids::Queue,
     /// Lava that touches water, and may cool (see lava_touching_water).
@@ -275,10 +341,12 @@ impl World {
             meta_path: Some(dir.join("meta.txt")),
             block_columns: RefCell::new(FastMap::default()),
             columns_made: Cell::new(0),
-            column_limit: SERVER_COLUMNS,
+            column_limit: WORLD_COLUMNS,
             heights: RefCell::new(FastMap::default()),
             cave_samples: RefCell::new(FastMap::default()),
             dungeon_blocks: RefCell::new(FastMap::default()),
+            dungeon_nodes: Cell::new(0),
+            trimmed: Cell::new(0),
             liquid_queue: liquids::Queue::default(),
             cooling: FastSet::default(),
             moss: FastSet::default(),
@@ -336,10 +404,12 @@ impl World {
             meta_path: None,
             block_columns: RefCell::new(FastMap::default()),
             columns_made: Cell::new(0),
-            column_limit: BUILDER_COLUMNS,
+            column_limit: WORLD_COLUMNS,
             heights: RefCell::new(FastMap::default()),
             cave_samples: RefCell::new(FastMap::default()),
             dungeon_blocks: RefCell::new(FastMap::default()),
+            dungeon_nodes: Cell::new(0),
+            trimmed: Cell::new(0),
             liquid_queue: liquids::Queue::default(),
             cooling: FastSet::default(),
             moss: FastSet::default(),
@@ -353,8 +423,12 @@ impl World {
         self.state.clone()
     }
 
-    pub fn use_snapshot(&mut self, state: Arc<State>) {
-        self.state = state;
+    /// Build from `state` from now on, handing back the snapshot used
+    /// until now. (The block builder sends it back to the server loop to
+    /// be dropped there: see BuildJob.)
+    pub fn use_snapshot(&mut self, state: Arc<State>) -> Arc<State> {
+        self.trim_if_asked();
+        std::mem::replace(&mut self.state, state)
     }
 
     pub fn version(&self) -> u64 {
@@ -467,50 +541,27 @@ impl World {
     // Terrain with caches
     // -----------------------------------------------------------------------
 
+    /// Empty this world's own terrain caches if trim_caches has asked.
+    /// Called between jobs (the builder: use_snapshot; the server loop:
+    /// its tick), never while a cache is in use.
+    pub fn trim_if_asked(&self) {
+        let trims = TRIMS.load(std::sync::atomic::Ordering::Relaxed);
+        if trims == self.trimmed.get() {
+            return;
+        }
+        self.trimmed.set(trims);
+        *self.block_columns.borrow_mut() = FastMap::default();
+        *self.heights.borrow_mut() = FastMap::default();
+        *self.cave_samples.borrow_mut() = FastMap::default();
+        *self.dungeon_blocks.borrow_mut() = FastMap::default();
+        self.dungeon_nodes.set(0);
+    }
+
     fn block_column(&self, bx: i16, bz: i16) -> Arc<BlockColumn> {
         if let Some((_, c)) = self.block_columns.borrow().get(&(bx, bz)) {
             return c.clone();
         }
-        let mut columns = Vec::with_capacity(256);
-        let (x0, z0) = (bx as i32 * 16, bz as i32 * 16);
-        for z in 0..16 {
-            for x in 0..16 {
-                columns.push(terrain::column(x0 + x, z0 + z));
-            }
-        }
-        let min_height = columns.iter().map(|c| c.height).min().unwrap_or(0);
-        let max_height = columns.iter().map(surface_or_lake).max().unwrap_or(0);
-        let trees = terrain::trees_in(x0, z0, x0 + 15, z0 + 15);
-        let mut tree_top = vec![i32::MIN; 256];
-        for t in &trees {
-            for z in (t.z - terrain::TREE_REACH).max(z0)..=(t.z + terrain::TREE_REACH).min(z0 + 15) {
-                for x in (t.x - terrain::TREE_REACH).max(x0)..=(t.x + terrain::TREE_REACH).min(x0 + 15) {
-                    let top = &mut tree_top[((z - z0) * 16 + x - x0) as usize];
-                    *top = (*top).max(t.top());
-                }
-            }
-        }
-        let max_tree_top = tree_top.iter().copied().max().unwrap_or(i32::MIN);
-        let has_emergent = trees.iter().any(|t| t.kind == terrain::TreeKind::Emergent);
-        // Butterflies and fireflies, in the air (not in a tree).
-        let mut insects = Vec::new();
-        for z in 0..16 {
-            for x in 0..16 {
-                let col = &columns[(z * 16 + x) as usize];
-                let near = |nx: i32, nz: i32| {
-                    let (lx, lz) = (nx - x0, nz - z0);
-                    if (0..16).contains(&lx) && (0..16).contains(&lz) { columns[(lz * 16 + lx) as usize] } else { terrain::column(nx, nz) }
-                };
-                if let Some((dy, id)) = terrain::insect_over(x0 + x, z0 + z, col, &near) {
-                    let p = (x0 + x, col.height + dy, z0 + z);
-                    if terrain::tree_node_in(&trees, p.0, p.1, p.2).is_none() {
-                        insects.push((p, id));
-                    }
-                }
-            }
-        }
-        let max_insect = insects.iter().map(|(p, _)| p.1).max().unwrap_or(i32::MIN);
-        let bc = Arc::new(BlockColumn { columns, min_height, max_height, trees, tree_top, max_tree_top, has_emergent, insects, max_insect });
+        let bc = shared_block_column(bx, bz);
         let mut cache = self.block_columns.borrow_mut();
         let made = self.columns_made.get().wrapping_add(1);
         self.columns_made.set(made);
@@ -530,6 +581,26 @@ impl World {
 
     /// Lowest generated surface and highest generated node (surface or
     /// tree) in a block column, for deciding which blocks to send.
+    /// height_range, if it costs next to nothing: the block column is
+    /// already worked out (here or by the other thread). Otherwise None,
+    /// and estimated_height_range gives a rough range.
+    /// Whether height_range would cost next to nothing (see
+    /// height_range_if_known).
+    pub fn height_known(&self, bx: i16, bz: i16) -> bool {
+        self.heights.borrow().contains_key(&(bx, bz)) || self.block_column_known(bx, bz)
+    }
+
+    pub fn height_range_if_known(&self, bx: i16, bz: i16) -> Option<(i32, i32)> {
+        let known = self.heights.borrow().contains_key(&(bx, bz)) || self.block_column_known(bx, bz);
+        known.then(|| self.height_range(bx, bz))
+    }
+
+    /// Whether a block column is already worked out (here or by the other
+    /// thread), so using it costs next to nothing.
+    pub fn block_column_known(&self, bx: i16, bz: i16) -> bool {
+        self.block_columns.borrow().contains_key(&(bx, bz)) || column_ready(bx, bz)
+    }
+
     pub fn height_range(&self, bx: i16, bz: i16) -> (i32, i32) {
         if let Some(&h) = self.heights.borrow().get(&(bx, bz)) {
             return h;
@@ -563,6 +634,12 @@ impl World {
 
     /// The nodes dungeons change in a map block, sorted (dungeons::block).
     fn dungeon_block(&self, b: BlockPos) -> Option<Arc<[dungeons::Placed]>> {
+        // Nothing outside the world. (Asked for, it means a bad position
+        // somewhere: logged, to find where.)
+        if !block_in_world(b) {
+            warn!("Dungeons asked for block {b:?}, outside the world");
+            return None;
+        }
         if let Some(found) = self.dungeon_blocks.borrow().get(&b) {
             return found.clone();
         }
@@ -582,11 +659,14 @@ impl World {
         };
         let placed = dungeons::block(b, &mut terrain);
         let found: Option<Arc<[dungeons::Placed]>> = (!placed.is_empty()).then(|| placed.into());
+        let nodes = found.as_ref().map_or(0, |f| f.len());
         let mut cache = self.dungeon_blocks.borrow_mut();
-        if cache.len() >= DUNGEON_CACHE_MAX {
-            cache.clear();
+        if cache.len() >= DUNGEON_CACHE_MAX || self.dungeon_nodes.get() + nodes > DUNGEON_CACHE_NODES {
+            *cache = FastMap::default();
+            self.dungeon_nodes.set(0);
         }
         cache.insert(b, found.clone());
+        self.dungeon_nodes.set(self.dungeon_nodes.get() + nodes);
         found
     }
 
@@ -1330,6 +1410,113 @@ fn record(pos: NodePos, id: u16, param2: u8) -> Vec<u8> {
     r.push(field.len() as u8);
     r.extend_from_slice(&field);
     r
+}
+
+
+/// A rough height_range for a block column not yet worked out, from nine
+/// of its columns (corners, edges' middles and centre) rather than all 256
+/// and its trees: generous, with room for a valley between the samples
+/// below and for trees above, so the blocks holding the surface are
+/// almost surely among those it covers. The real range replaces it once
+/// the block builder has made the column (see Server::plan_blocks).
+pub fn estimated_height_range(bx: i16, bz: i16) -> (i32, i32) {
+    let (x0, z0) = (bx as i32 * 16, bz as i32 * 16);
+    let (mut low, mut high) = (i32::MAX, i32::MIN);
+    for dz in [0, 8, 15] {
+        for dx in [0, 8, 15] {
+            let c = terrain::column(x0 + dx, z0 + dz);
+            low = low.min(c.height);
+            high = high.max(surface_or_lake(&c));
+        }
+    }
+    (low - 8, high + 24)
+}
+
+/// A block column from the shared cache (see SHARED_COLUMNS), worked out
+/// here if no thread has yet; if another thread is working it out, waits
+/// for that. The caller gets its own copy (about 4 KB, copied in
+/// microseconds), never an Arc shared with the other thread: on the
+/// ESP32-S3 an atomic operation on PSRAM isn't atomic between the two
+/// cores, so a shared Arc's count gets lost and what it holds is freed
+/// while still in use (that crashed the board).
+fn shared_block_column(bx: i16, bz: i16) -> Arc<BlockColumn> {
+    let making = {
+        let mut guard = COLUMNS.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            let shared = guard.get_or_insert_with(Default::default);
+            shared.uses = shared.uses.wrapping_add(1);
+            let uses = shared.uses;
+            if let Some(found) = shared.map.get_mut(&(bx, bz)) {
+                found.0 = uses;
+                return Arc::new(found.1.clone());
+            }
+            if !shared.busy.contains(&(bx, bz)) {
+                shared.busy.insert((bx, bz));
+                break MakingColumn((bx, bz));
+            }
+            guard = COLUMN_MADE.wait(guard).unwrap_or_else(|e| e.into_inner());
+        }
+    };
+    let bc = make_block_column(bx, bz);
+    {
+        let mut guard = COLUMNS.lock().unwrap_or_else(|e| e.into_inner());
+        let shared = guard.get_or_insert_with(Default::default);
+        shared.uses = shared.uses.wrapping_add(1);
+        let uses = shared.uses;
+        if shared.map.len() >= SHARED_COLUMNS {
+            // Keep the half used most recently.
+            let keep = (SHARED_COLUMNS / 2) as u32;
+            shared.map.retain(|_, (when, _)| uses.wrapping_sub(*when) <= keep);
+        }
+        shared.map.insert((bx, bz), (uses, bc.clone()));
+    }
+    drop(making);
+    Arc::new(bc)
+}
+
+/// Work out a block column's generated terrain: its 256 columns, trees and
+/// insects.
+fn make_block_column(bx: i16, bz: i16) -> BlockColumn {
+    let mut columns = Vec::with_capacity(256);
+    let (x0, z0) = (bx as i32 * 16, bz as i32 * 16);
+    for z in 0..16 {
+        for x in 0..16 {
+            columns.push(terrain::column(x0 + x, z0 + z));
+        }
+    }
+    let min_height = columns.iter().map(|c| c.height).min().unwrap_or(0);
+    let max_height = columns.iter().map(surface_or_lake).max().unwrap_or(0);
+    let trees = terrain::trees_in(x0, z0, x0 + 15, z0 + 15);
+    let mut tree_top = vec![i32::MIN; 256];
+    for t in &trees {
+        for z in (t.z - terrain::TREE_REACH).max(z0)..=(t.z + terrain::TREE_REACH).min(z0 + 15) {
+            for x in (t.x - terrain::TREE_REACH).max(x0)..=(t.x + terrain::TREE_REACH).min(x0 + 15) {
+                let top = &mut tree_top[((z - z0) * 16 + x - x0) as usize];
+                *top = (*top).max(t.top());
+            }
+        }
+    }
+    let max_tree_top = tree_top.iter().copied().max().unwrap_or(i32::MIN);
+    let has_emergent = trees.iter().any(|t| t.kind == terrain::TreeKind::Emergent);
+    // Butterflies and fireflies, in the air (not in a tree).
+    let mut insects = Vec::new();
+    for z in 0..16 {
+        for x in 0..16 {
+            let col = &columns[(z * 16 + x) as usize];
+            let near = |nx: i32, nz: i32| {
+                let (lx, lz) = (nx - x0, nz - z0);
+                if (0..16).contains(&lx) && (0..16).contains(&lz) { columns[(lz * 16 + lx) as usize] } else { terrain::column(nx, nz) }
+            };
+            if let Some((dy, id)) = terrain::insect_over(x0 + x, z0 + z, col, &near) {
+                let p = (x0 + x, col.height + dy, z0 + z);
+                if terrain::tree_node_in(&trees, p.0, p.1, p.2).is_none() {
+                    insects.push((p, id));
+                }
+            }
+        }
+    }
+    let max_insect = insects.iter().map(|(p, _)| p.1).max().unwrap_or(i32::MIN);
+    BlockColumn { columns, min_height, max_height, trees, tree_top, max_tree_top, has_emergent, insects, max_insect }
 }
 
 #[cfg(test)]

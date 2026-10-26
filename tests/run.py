@@ -70,6 +70,7 @@ NETWORK = [
     ("boats", {}, ["{water}"], False),
     ("carts", {}, [], False),
     ("creative", {}, [], False),
+    ("moves", {}, [], False),
     ("dungeon", {}, ["{chest}", "{front}"], False),
 ]
 
