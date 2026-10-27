@@ -46,6 +46,12 @@ That wipes a world kept in the board's flash (one on an SD card is untouched). I
 
 ### LilyGO T-Display-S3
 
+<p align="center">
+  <img src="../assets/server-201.jpg" width="60%" alt="LilyGO's T-Display-S3 in a black case, its 1.9 inch screen showing the USB drive page: the game's files in the board's flash, 10.8 MB">
+</p>
+
+*The T-Display-S3 in LilyGO's case, as a USB drive: with no SD card, the game's files are in the board's flash.*
+
 LilyGO's [**T-Display-S3**](https://lilygo.cc/products/t-display-s3) (1.9" screen) is supported with `BOARD=tdisplays3`, or from [the web installer](building.md#releases-and-the-web-installer).
 
 | | LilyGO T-Display-S3 (`BOARD=tdisplays3`) |
