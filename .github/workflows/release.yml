@@ -1,0 +1,165 @@
+# Release: build the firmware for each board, attach it to a GitHub release,
+# and publish the web installer (GitHub Pages) with it.
+#
+# - Pushing a tag v<version> (matching Cargo.toml's version, e.g. v0.1.0)
+#   does all three.
+# - Running it by hand (Actions, Release, Run workflow) only builds the
+#   firmware, as downloadable artifacts: a check that it builds, nothing
+#   published.
+#
+# One-time set-up on GitHub (see docs/building.md, "Releases and the web
+# installer"): Settings, Pages, Source "GitHub Actions"; and Settings,
+# Environments, github-pages, allow tags matching v* to deploy.
+#
+# The firmware is built without Wi-Fi details (no WIFI_SSID or WIFI_PASS),
+# so a new board starts its hotspot and is set up from its settings page.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The Xtensa Rust toolchain (espup's version numbers). Pinned, so a new
+  # toolchain can't break a release; update it with care.
+  XTENSA_TOOLCHAIN: "1.97.0.0"
+  ESPFLASH_SKIP_UPDATE_CHECK: "1"
+
+jobs:
+  firmware:
+    name: Firmware (${{ matrix.board }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        board: [waveshare, es3c28p]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches Cargo.toml
+        if: github.ref_type == 'tag'
+        run: |
+          want="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          if [[ "${GITHUB_REF_NAME#v}" != "$want" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match Cargo.toml's version $want: the firmware reports Cargo.toml's (on the server list too). Bump Cargo.toml, or tag v$want."
+            exit 1
+          fi
+
+      - name: Install the Rust toolchain for Xtensa
+        uses: esp-rs/xtensa-toolchain@v1.7
+        with:
+          buildtargets: esp32s3
+          version: ${{ env.XTENSA_TOOLCHAIN }}
+          ldproxy: true
+
+      - name: Install espflash
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash@4
+
+      # ESP-IDF and its tools (ESP_IDF_TOOLS_INSTALL_DIR = "workspace" in
+      # .cargo/config.toml puts them in .embuild/): a few GB, slow to fetch.
+      - name: Cache ESP-IDF
+        uses: actions/cache@v6
+        with:
+          path: .embuild
+          key: embuild-${{ hashFiles('.cargo/config.toml', 'sdkconfig.defaults', 'components_esp32s3.lock') }}
+
+      - name: Build
+        env:
+          BOARD: ${{ matrix.board }}
+        run: cargo build --release
+
+      # One image from address 0: the bootloader, the partition table
+      # (partitions.csv) and the app, as `cargo run` (espflash flash) writes
+      # them. Not padded to the flash size, so writing it leaves the
+      # storage partition (a game kept in flash) alone.
+      - name: Make the flash image
+        run: |
+          mkdir -p out
+          espflash save-image --chip esp32s3 --merge --skip-padding --flash-size 16mb \
+            --partition-table partitions.csv \
+            target/xtensa-esp32s3-espidf/release/esp32-s3-minetest out/${{ matrix.board }}.bin
+          ls -l out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.board }}
+          path: out/${{ matrix.board }}.bin
+          if-no-files-found: error
+
+  release:
+    name: Release and web installer
+    if: github.ref_type == 'tag'
+    needs: firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the release
+      pages: write      # the web installer
+      id-token: write   # deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: firmware-*
+          path: out
+          merge-multiple: true
+
+      - name: Name the release files
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir -p release
+          for b in waveshare es3c28p; do
+            cp "out/$b.bin" "release/minetest-on-a-stick-$b-$v.bin"
+          done
+          (cd release && sha256sum *.bin > SHA256SUMS)
+          ls -l release
+
+      - name: Release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: Minetest on a Stick ${{ github.ref_name }}
+          files: |
+            release/*.bin
+            release/SHA256SUMS
+          generate_release_notes: true
+          body: |
+            Install from your browser (Chrome or Edge on a computer): https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+
+            Or write the image for your board at address 0:
+            - `minetest-on-a-stick-waveshare-*.bin`: Waveshare ESP32-S3-LCD-1.47
+            - `minetest-on-a-stick-es3c28p-*.bin`: LCDwiki ES3C28P and ES3N28P
+
+            ```
+            espflash write-bin 0x0 minetest-on-a-stick-waveshare-<version>.bin
+            ```
+
+            A board with no Wi-Fi network set up starts its own hotspot: join it and open http://192.168.4.1 to add yours. See docs/setup.md.
+
+      - name: Put the web installer together
+        run: |
+          python3 tools/make_flasher_site.py --version "${GITHUB_REF_NAME#v}" --firmware out --out _site \
+            --repo "${{ github.server_url }}/${{ github.repository }}"
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+      - name: Publish the web installer
+        id: pages
+        uses: actions/deploy-pages@v5

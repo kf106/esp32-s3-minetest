@@ -17,3 +17,6 @@ __pycache__/
 
 # Python virtual environment for the tests
 /.venv/
+
+# The web installer, put together locally by tools/make_flasher_site.py
+/_site/

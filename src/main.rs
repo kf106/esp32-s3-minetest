@@ -220,7 +220,15 @@ fn main() -> anyhow::Result<()> {
         info!("Back on the hotspot, as the settings page asked");
         Boot::Hotspot
     } else {
-        boot_choice(&status)
+        match boot_choice(&status) {
+            // No network to join yet (a new board, flashed without Wi-Fi
+            // details): the hotspot, so its settings page can add one.
+            Boot::Normal if config.networks.is_empty() => {
+                info!("No Wi-Fi networks in {WIFI_FILE}: starting the hotspot, for the settings page");
+                Boot::Hotspot
+            }
+            choice => choice,
+        }
     };
     if boot == Boot::Drive {
         // The server's own use of the files stops first.
@@ -702,9 +710,6 @@ fn join_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>, networks: &[wifi_config:
         info!("{text}");
         status::lock(status).event(text);
     };
-    if networks.is_empty() {
-        say(format!("No Wi-Fi networks: add one to {WIFI_FILE}"));
-    }
     loop {
         let seen = match wifi.scan() {
             Ok(aps) => aps,

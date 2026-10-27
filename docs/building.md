@@ -71,3 +71,36 @@ PERF=1 cargo run --release
 ```
 
 The serial log then says every 10 seconds how busy each core and the main tasks were, where the server's main loop spent its time, and how many map blocks were built and sent; and every minute how much PSRAM is free. Build without `PERF` for normal play: nothing is measured then.
+
+## Releases and the web installer
+
+Released firmware is built on GitHub, and can be installed from a browser at **https://kf106.github.io/esp32-s3-minetest/**, with [ESP Web Tools](https://github.com/esphome/esp-web-tools): Chrome, Edge or Opera on a computer, which can talk to the board over USB (Web Serial). The page is in `flasher/index.html`.
+
+### Making a release
+
+1. Set `version` in `Cargo.toml` (the firmware reports it, on the server list too) and commit.
+2. Tag the commit with that version and push the tag:
+   ```
+   git tag v0.1.0
+   git push origin v0.1.0
+   ```
+3. The **Release** workflow (`.github/workflows/release.yml`) then:
+   - builds the firmware for both boards (`BOARD=waveshare` and `BOARD=es3c28p`), without Wi-Fi details;
+   - makes one image per board with `espflash save-image --merge --skip-padding`: the bootloader, the partition table and the app, from address 0, as `cargo run` writes them, but not padded to the flash size, so it leaves the storage partition (a game kept in flash) alone;
+   - makes a GitHub release with the two images (`minetest-on-a-stick-<board>-<version>.bin`) and their SHA-256 sums;
+   - publishes the web installer to GitHub Pages, with those images and an ESP Web Tools manifest for each board (`tools/make_flasher_site.py`).
+
+A tag that doesn't match `Cargo.toml`'s version stops the workflow. The first run takes about half an hour (ESP-IDF is downloaded and built); later ones reuse the cached ESP-IDF. To check that the firmware builds without releasing anything, run the workflow by hand (Actions, Release, Run workflow): it only builds, and the images are downloadable from the run's page.
+
+### Setting it up on GitHub (once)
+
+- **Pages:** Settings, Pages, Build and deployment, Source: **GitHub Actions**.
+- **Deploying from tags:** Settings, Environments, **github-pages**, Deployment branches and tags: add a rule for tags matching `v*`. Without it, GitHub only lets the default branch deploy to Pages, and the release's last step fails with "not allowed to deploy to github-pages due to environment protection rules".
+
+### Things to know
+
+- **The toolchain is pinned:** `XTENSA_TOOLCHAIN` at the top of the workflow sets the Xtensa Rust version (espup's numbering, such as `1.97.0.0`), so a new toolchain can't break a release. Keep it in step with what you build with locally (`rustc +esp --version`).
+- **Two boards, two buttons:** ESP Web Tools picks firmware by chip, and both boards are ESP32-S3s, so the page has a button and a manifest for each.
+- **Erasing:** the installer asks whether to erase the flash first. Erase on a new board; not on an update, or a game kept in the board's own flash is lost. The SD card is never touched.
+- **To look at the page locally:** `python3 tools/make_flasher_site.py --version test --firmware <folder with waveshare.bin and es3c28p.bin> --out _site`, then `python3 -m http.server -d _site` and open http://localhost:8000 (Web Serial works on localhost as on https).
+

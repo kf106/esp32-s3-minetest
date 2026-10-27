@@ -36,6 +36,12 @@ How it differs from a real Luanti server: no Lua mods (the game is built in), on
 
 You need a [supported board](docs/hardware.md) (the Waveshare ESP32-S3-LCD-1.47, or LCDwiki's ES3C28P / ES3N28P), a USB cable, and optionally a microSD card formatted as FAT32.
 
+### From your browser
+
+Open the **[web installer](https://kf106.github.io/esp32-s3-minetest/)** in Chrome or Edge on a computer, plug the board in by USB, and press the button for your board. It installs the latest release. The board then starts its own hotspot: join it, open http://192.168.4.1, and add your Wi-Fi network on [the settings page](docs/setup.md#the-settings-page). Then join it in Luanti at the address its screen shows, port 30000. The first player to log in becomes the administrator, so make that you.
+
+### Building it yourself
+
 1. Install the Rust toolchain for the ESP32 and the flashing tools (details in [docs/building.md](docs/building.md)):
    ```
    cargo install espup ldproxy espflash
@@ -48,7 +54,7 @@ You need a [supported board](docs/hardware.md) (the Waveshare ESP32-S3-LCD-1.47,
    ```
 3. In Luanti, open **Join Game**, enter the address the board's screen shows, port 30000, and pick a name and password. The first player to log in becomes the administrator, so make that you.
 
-No Wi-Fi to join? Hold BOOT when the screen asks, just after switching on, and the board makes [its own hotspot](docs/setup.md#its-own-hotspot). On the hotspot, a browser at 192.168.4.1 opens [a settings page](docs/setup.md#the-settings-page) for the Wi-Fi networks, the game rules and the welcome message.
+No Wi-Fi to join? A board with no networks in `wifi.txt` starts its own hotspot by itself; otherwise, hold BOOT when the screen asks, just after switching on, and the board makes [its own hotspot](docs/setup.md#its-own-hotspot). On the hotspot, a browser at 192.168.4.1 opens [a settings page](docs/setup.md#the-settings-page) for the Wi-Fi networks, the game rules and the welcome message.
 
 ## On a PC or VPS
 

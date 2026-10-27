@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Minetest on a Stick: install</title>
+<meta name="description" content="Install Minetest on a Stick, a Luanti server with Minetest Game built in, on an ESP32-S3 board from your browser.">
+<link rel="icon" href="t/default_meselamp.png">
+<!-- ESP Web Tools (esphome/esp-web-tools): flashing from the browser over Web Serial. -->
+<script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
+<style>
+:root{--ink:#f2efe6;--dim:#b9b3a3;--panel:rgba(22,20,18,.9);--hi:#6b6b6b;--lo:#2b2b2b;--on:#4c9a2a;--onhi:#7cc04b;--warn:#e8b23a}
+*{box-sizing:border-box}
+html{background:#2a1d12 url(t/esp_dirt.png) repeat;background-size:64px;image-rendering:pixelated}
+body{margin:0;color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding-bottom:40px}
+img{image-rendering:pixelated}
+a{color:#9fd3ff}
+code{background:#000;padding:1px 5px;font-size:14px}
+pre{background:#000;padding:10px;font-size:13px;overflow-x:auto;margin:8px 0}
+header{background:url(t/esp_grass_side.png) repeat-x;background-size:48px;height:48px;border-bottom:4px solid #000}
+.title{max-width:820px;margin:0 auto;padding:18px 16px 6px;display:flex;align-items:center;gap:12px}
+.title img{width:48px;height:48px}
+h1{margin:0;font-size:28px;letter-spacing:.5px;text-shadow:3px 3px 0 #000}
+.sub{color:var(--dim);margin:0;text-shadow:2px 2px 0 #000;font-size:15px}
+main{max-width:820px;margin:0 auto;padding:8px 16px}
+section{background:var(--panel);border:3px solid #000;box-shadow:inset 2px 2px 0 var(--hi),inset -2px -2px 0 var(--lo);margin:16px 0;padding:16px}
+h2{margin:0 0 10px;font-size:20px;display:flex;align-items:center;gap:10px;text-shadow:2px 2px 0 #000}
+h2 img{width:32px;height:32px}
+p{margin:8px 0}
+.dim{color:var(--dim);font-size:14px}
+.boards{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.board{background:#3b3b3b;border:3px solid #000;box-shadow:inset 2px 2px 0 #777,inset -2px -2px 0 #1c1c1c;padding:12px;display:flex;flex-direction:column;gap:8px}
+.board img{width:100%;height:auto;image-rendering:auto;border:2px solid #000;aspect-ratio:800/425;object-fit:cover}
+.board b{font-size:17px;text-shadow:2px 2px 0 #000}
+.board .dim{flex:1}
+esp-web-install-button{display:block}
+.btn{display:block;width:100%;font:700 17px system-ui,sans-serif;color:#fff;text-shadow:2px 2px 0 #000;padding:12px 16px;cursor:pointer;border:3px solid #000;
+ background:#3f7f24;box-shadow:inset 3px 3px 0 #73b84a,inset -3px -3px 0 #24521a}
+.btn:active{box-shadow:inset 3px 3px 0 #24521a,inset -3px -3px 0 #73b84a}
+.btn:hover{filter:brightness(1.1)}
+.unsupported,.not-allowed{display:block;background:#4a3410;border:3px solid #000;padding:10px;font-size:14px}
+ol{margin:6px 0;padding-left:22px}
+li{margin:4px 0}
+.warn{border-left:4px solid var(--warn);padding-left:10px}
+footer{max-width:820px;margin:0 auto;padding:0 16px;color:var(--dim);font-size:13px;text-shadow:1px 1px 0 #000}
+</style>
+</head>
+<body>
+<header></header>
+<div class="title"><img src="t/default_meselamp.png" alt=""><div><h1>Minetest on a Stick</h1>
+<p class="sub">A Luanti server with Minetest Game built in, on an ESP32-S3. Version {{VERSION}}.</p></div></div>
+<main>
+
+<section>
+<h2><img src="t/default_tool_diamondpick.png" alt="">Install from your browser</h2>
+<p>Connect the board to this computer by USB, then press the button for your board. Your browser asks which serial port to use: pick the board's (often "USB JTAG/serial debug unit").</p>
+<p class="dim">This needs Chrome, Edge or Opera on a desktop or laptop (they can talk to USB serial devices). Firefox and Safari can't, nor can phones.</p>
+<div class="boards">
+  <div class="board">
+    <img src="boards/waveshare.jpg" alt="The Waveshare ESP32-S3-LCD-1.47, a USB stick with a small screen showing the server's address and its players">
+    <b>Waveshare ESP32-S3-LCD-1.47</b>
+    <span class="dim">The USB stick with a 1.47" screen and a microSD slot.</span>
+    <esp-web-install-button manifest="firmware/waveshare.json">
+      <button slot="activate" class="btn">Install on the Waveshare</button>
+      <span slot="unsupported" class="unsupported">Your browser can't do this: use Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="not-allowed">This page must be opened over https to install.</span>
+    </esp-web-install-button>
+  </div>
+  <div class="board">
+    <img src="boards/es3c28p.jpg" alt="LCDwiki's ES3N28P, a board with a 2.8 inch screen showing the server's device page">
+    <b>LCDwiki ES3C28P or ES3N28P</b>
+    <span class="dim">The boards with a 2.8" screen (with or without touch).</span>
+    <esp-web-install-button manifest="firmware/es3c28p.json">
+      <button slot="activate" class="btn">Install on the ES3C28P / ES3N28P</button>
+      <span slot="unsupported" class="unsupported">Your browser can't do this: use Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="not-allowed">This page must be opened over https to install.</span>
+    </esp-web-install-button>
+  </div>
+</div>
+</section>
+
+<section>
+<h2><img src="t/default_sign_wood.png" alt="">Things to know</h2>
+<ul>
+<li><b>Erasing:</b> the installer offers to erase the board first. Erase on a board that has never run Minetest on a Stick. On an update, don't erase: a game kept in the board's own flash (with no SD card) would be lost. A game on the SD card is never touched.</li>
+<li><b>If the board isn't found:</b> hold its BOOT button, press and release RESET (or plug the board in while holding BOOT), let go of BOOT, and try again. Close any other program using the port, such as a serial monitor.</li>
+<li><b>An SD card</b> (FAT32, any size) is best: the world, accounts and players are kept there. Without one, the board keeps the game in its own flash.</li>
+</ul>
+</section>
+
+<section>
+<h2><img src="t/map_mapping_kit.png" alt="">After installing</h2>
+<ol>
+<li>The board restarts and, with no Wi-Fi network to join yet, starts its own hotspot. Its screen shows the hotspot's name and password, and a QR code for a phone's camera.</li>
+<li>Join the hotspot with a phone or laptop and open <b>http://192.168.4.1</b> in a browser: the settings page.</li>
+<li>Add your Wi-Fi network, and press <b>Save and restart on Wi-Fi</b>. The board joins it, and its screen shows the address to use.</li>
+<li>In Luanti, open <b>Join Game</b>, enter that address and port <b>30000</b>, and pick a name and password. The first player to log in becomes the administrator, so make that you.</li>
+</ol>
+<p class="dim">To get back to the settings page later, hold BOOT for a second just after the board starts: it starts the hotspot instead of joining Wi-Fi.</p>
+</section>
+
+<section>
+<h2><img src="t/default_mese_crystal.png" alt="">Other ways</h2>
+<p>The firmware files are also on the <a href="{{RELEASES}}">releases page</a>, one per board, each a single image to write at address 0, with espflash or esptool:</p>
+<pre>espflash write-bin 0x0 minetest-on-a-stick-waveshare-{{VERSION}}.bin
+esptool.py --chip esp32s3 write_flash 0x0 minetest-on-a-stick-waveshare-{{VERSION}}.bin</pre>
+<p>To build it yourself, with your Wi-Fi details built in, see <a href="{{REPO}}/blob/main/docs/building.md">Building and flashing</a>.</p>
+</section>
+
+</main>
+<footer><p>Source, documentation and licences: <a href="{{REPO}}">{{REPO_NAME}}</a>. The textures are Minetest Game's (CC BY-SA 3.0) and this project's. Flashing by <a href="https://github.com/esphome/esp-web-tools">ESP Web Tools</a>.</p></footer>
+</body>
+</html>
