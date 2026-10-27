@@ -335,6 +335,9 @@ pub struct Snapshot {
     /// The world's age, in seconds (Luanti's game_time).
     pub game_time: u64,
     pub creative: bool,
+    /// New accounts must have a password (disallow_empty_password): the
+    /// list's "password" flag.
+    pub passwords_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -388,6 +391,7 @@ fn js(s: &str) -> String {
 /// in, not Lua mods), the map generator's name (ours is v7-like, not v7),
 /// and can_see_far_names. Damage is on unless creative mode is (as with
 /// Luanti's enable_damage); players can't hurt each other, so no PvP.
+/// "password" is Luanti's disallow_empty_password.
 pub fn json(a: &Announce, port: u16, action: Action, uptime: u64, s: &Snapshot) -> String {
     let mut f: Vec<(&str, String)> = vec![("action", js(action.name())), ("port", port.to_string())];
     if !a.address.is_empty() {
@@ -404,7 +408,7 @@ pub fn json(a: &Announce, port: u16, action: Action, uptime: u64, s: &Snapshot) 
         }
         f.push(("creative", s.creative.to_string()));
         f.push(("damage", (!s.creative).to_string()));
-        f.push(("password", "false".into()));
+        f.push(("password", s.passwords_required.to_string()));
         f.push(("pvp", "false".into()));
         f.push(("uptime", uptime.to_string()));
         f.push(("gameid", js("minetest")));
@@ -722,10 +726,10 @@ mod tests {
     #[test]
     fn announcement_json() {
         let a = Announce { address: "mc.example.org".into(), send_players: true, ..good() };
-        let s = Snapshot { players: vec!["Ann".into(), "Bo \"B\"".into()], max_players: 6, game_time: 5040, creative: false };
+        let s = Snapshot { players: vec!["Ann".into(), "Bo \"B\"".into()], max_players: 6, game_time: 5040, creative: false, passwords_required: true };
         let j = json(&a, 30001, Action::Start, 75, &s);
         for want in [r#""action":"start""#, r#""port":30001"#, r#""address":"mc.example.org""#, r#""name":"Stick""#,
-                     r#""proto_min":53"#, r#""proto_max":53"#, r#""damage":true"#, r#""creative":false"#, r#""pvp":false"#,
+                     r#""proto_min":53"#, r#""proto_max":53"#, r#""damage":true"#, r#""creative":false"#, r#""pvp":false"#, r#""password":true"#,
                      r#""uptime":75"#, r#""gameid":"minetest""#, r#""game_time":5040"#, r#""clients":2"#, r#""clients_max":6"#,
                      r#""clients_list":["Ann","Bo \"B\""]"#, r#""dedicated":true"#, r#""privs":"interact, shout""#] {
             assert!(j.contains(want), "{want} not in {j}");

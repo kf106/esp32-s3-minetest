@@ -358,6 +358,7 @@ struct Current {
     tnt: bool,
     mobs: bool,
     creative: bool,
+    no_empty_passwords: bool,
     motd: String,
     announce: Announce,
 }
@@ -375,6 +376,7 @@ impl Current {
             tnt: settings.tnt(),
             mobs: settings.mobs(),
             creative: settings.creative(),
+            no_empty_passwords: settings.no_empty_passwords(),
             motd: std::fs::read_to_string(&files.motd).unwrap_or_default(),
             announce: announce::read(&files.server),
         }
@@ -389,6 +391,7 @@ struct New {
     tnt: bool,
     mobs: bool,
     creative: bool,
+    no_empty_passwords: bool,
     motd: String,
     announce: Announce,
     restart_on_hotspot: bool,
@@ -404,6 +407,7 @@ impl New {
             tnt: self.tnt,
             mobs: self.mobs,
             creative: self.creative,
+            no_empty_passwords: self.no_empty_passwords,
             motd: self.motd.clone(),
             announce: self.announce.clone(),
         }
@@ -511,6 +515,7 @@ fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<N
         tnt: on("tnt"),
         mobs: on("mobs"),
         creative: on("creative"),
+        no_empty_passwords: on("nopw"),
         motd,
         announce,
         restart_on_hotspot,
@@ -528,7 +533,7 @@ fn save(new: &New, files: &Files) -> io::Result<()> {
         storage::write(wifi, wifi_config::format(&new.networks, &new.hotspot).as_bytes())?;
     }
     let mut settings = Settings::read(&files.settings);
-    settings.set_all(new.fire, new.tnt, new.mobs, new.creative);
+    settings.set_all(new.fire, new.tnt, new.mobs, new.creative, new.no_empty_passwords);
     if new.motd.trim().is_empty() {
         match std::fs::remove_file(&files.motd) {
             Ok(()) => {}
@@ -677,6 +682,7 @@ function annCheck(){const why=annProblem(),sw=document.getElementById('ann_on');
 sw.disabled=!!why;if(why)sw.checked=false;document.getElementById('ann_hint').textContent=why;}
 ['ann_name','ann_desc','ann_url','ann_addr','ann_port'].forEach(i=>document.getElementById(i).addEventListener('input',annCheck));
 annCheck();
+document.getElementById('ann_on').addEventListener('change',e=>{if(e.target.checked)document.getElementById('nopw').checked=true;});
 "#;
 
 /// One network's row. `i` numbers the fields for a browser without the
@@ -767,6 +773,7 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
 <section><h2><img src="/t/map_mapping_kit.png" alt="">Public server list</h2>
 <label class="toggle wide"><input type="checkbox" id="ann_on" name="ann_on"{ann_on}{ann_dis}><img src="/t/map_mapping_kit.png" alt=""><span><b>Announce this server</b><small>List it in Luanti's Join Game tab, for anyone to find.</small></span><span class="state"></span></label>
 <p class="hint" id="ann_hint">{ann_hint}</p>
+<label class="toggle wide"><input type="checkbox" id="nopw" name="nopw"{nopw}><img src="/t/keys_key.png" alt=""><span><b>Require passwords</b><small>New players must choose a password, so nobody else can log in as them. Turned on with announcing.</small></span><span class="state"></span></label>
 <label class="field" for="ann_name">Server name</label><input type="text" id="ann_name" name="ann_name" value="{ann_name}" maxlength="{max_name}" autocomplete="off">
 <label class="field" for="ann_desc">Description</label><input type="text" id="ann_desc" name="ann_desc" value="{ann_desc}" maxlength="{max_desc}" autocomplete="off" placeholder="What players will find, and any rules">
 <label class="field" for="ann_url">Website (optional)</label><input type="text" id="ann_url" name="ann_url" value="{ann_url}" maxlength="{max_url}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://...">
@@ -784,6 +791,7 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
         mobs = toggle("mobs", "mobs_hexer_orb.png", "Mobs", "Hostile mobs spawn", c.mobs),
         creative = toggle("creative", "stair_birch_inner.png", "Creative", "Unlimited blocks", c.creative),
         motd = esc(&c.motd),
+        nopw = if c.no_empty_passwords { " checked" } else { "" },
         ann_on = if c.announce.enabled && announce::check(&c.announce).is_ok() { " checked" } else { "" },
         ann_dis = if announce::check(&c.announce).is_err() { " disabled" } else { "" },
         ann_hint = announce::check(&c.announce).err().map(|why| esc(&capitalise(&why))).unwrap_or_default(),
@@ -895,6 +903,7 @@ mod tests {
             tnt: true,
             mobs: false,
             creative: false,
+            no_empty_passwords: false,
             motd: String::new(),
             announce: Announce::default(),
         }
@@ -1010,6 +1019,7 @@ mod tests {
             tnt: true,
             mobs: true,
             creative: false,
+            no_empty_passwords: true,
             motd: "Welcome!\n".into(),
             announce: Announce { enabled: true, name: "Stick".into(), description: "Small".into(), ..Announce::default() },
             restart_on_hotspot: true,
@@ -1019,7 +1029,7 @@ mod tests {
         assert_eq!(parsed.networks, new.networks);
         assert_eq!(parsed.hotspot, Some(new.hotspot.clone()));
         let s = Settings::open(&files.settings);
-        assert_eq!((s.fire(), s.tnt(), s.mobs(), s.creative()), (false, true, true, false));
+        assert_eq!((s.fire(), s.tnt(), s.mobs(), s.creative(), s.no_empty_passwords()), (false, true, true, false, true));
         assert_eq!(std::fs::read_to_string(&files.motd).unwrap(), "Welcome!\n");
         assert_eq!(announce::read(&files.server), new.announce);
         let marker = files.hotspot_next.clone().unwrap();

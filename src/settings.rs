@@ -7,7 +7,10 @@
 //! (whether hostile mobs spawn: mobs.rs), off in a new world, since
 //! minetest_game has none (`/mobs` turns them on). And Luanti's
 //! `creative_mode`, off in a new world (`/mode creative` turns it on:
-//! creative.rs).
+//! creative.rs). And Luanti's `disallow_empty_password`: whether a new
+//! account must have a password, off unless set (as Luanti's default),
+//! set on the settings page (config_page.rs), and worth having on a server
+//! on the public list.
 
 use std::io;
 use std::path::PathBuf;
@@ -22,6 +25,7 @@ pub struct Settings {
     tnt: bool,
     mobs: bool,
     creative: bool,
+    no_empty_passwords: bool,
 }
 
 impl Settings {
@@ -39,6 +43,9 @@ impl Settings {
         }
         if s.mobs {
             info!("Mobs are on (enable_mobs = true in {})", s.path.display());
+        }
+        if s.no_empty_passwords {
+            info!("New accounts need a password (disallow_empty_password = true in {})", s.path.display());
         }
         s
     }
@@ -58,7 +65,8 @@ impl Settings {
         let tnt = flag(&text, "enable_tnt").unwrap_or(true);
         let mobs = flag(&text, "enable_mobs").unwrap_or(false);
         let creative = flag(&text, "creative_mode").unwrap_or(false);
-        Self { path, fire, tnt, mobs, creative }
+        let no_empty_passwords = flag(&text, "disallow_empty_password").unwrap_or(false);
+        Self { path, fire, tnt, mobs, creative, no_empty_passwords }
     }
 
     /// Whether fire spreads and burns things.
@@ -103,13 +111,22 @@ impl Settings {
 
     /// Set all four at once, with one write (the settings page:
     /// config_page.rs).
-    pub fn set_all(&mut self, fire: bool, tnt: bool, mobs: bool, creative: bool) {
-        (self.fire, self.tnt, self.mobs, self.creative) = (fire, tnt, mobs, creative);
+    pub fn set_all(&mut self, fire: bool, tnt: bool, mobs: bool, creative: bool, no_empty_passwords: bool) {
+        (self.fire, self.tnt, self.mobs, self.creative, self.no_empty_passwords) = (fire, tnt, mobs, creative, no_empty_passwords);
         self.save();
     }
 
+    /// Whether a new account must have a password (Luanti's
+    /// disallow_empty_password).
+    pub fn no_empty_passwords(&self) -> bool {
+        self.no_empty_passwords
+    }
+
     fn save(&self) {
-        let text = format!("enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\ncreative_mode = {}\n", self.fire, self.tnt, self.mobs, self.creative);
+        let text = format!(
+            "enable_fire = {}\nenable_tnt = {}\nenable_mobs = {}\ncreative_mode = {}\ndisallow_empty_password = {}\n",
+            self.fire, self.tnt, self.mobs, self.creative, self.no_empty_passwords
+        );
         if let Err(e) = storage::write(&self.path, text.as_bytes()) {
             warn!("Saving {}: {e}", self.path.display());
             crate::status::problem();
@@ -150,8 +167,11 @@ mod tests {
         let mut s = Settings::open(&path);
         assert!(!s.fire() && s.mobs() && !s.creative());
         s.set_creative(true);
+        let mut s = Settings::open(&path);
+        assert!(s.creative() && s.mobs() && !s.no_empty_passwords());
+        s.set_all(true, true, false, false, true);
         let s = Settings::open(&path);
-        assert!(s.creative() && s.mobs());
+        assert!(s.no_empty_passwords() && s.fire() && !s.creative());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -89,6 +89,7 @@ On the hotspot, the board also serves a settings page: join the hotspot with a p
 - **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
 - **Welcome message:** `motd.txt`. Empty means the built-in welcome.
 - **Public server list:** a name, a description and, optionally, a website, a domain name and the port players use from outside (`server.txt`, see [below](#the-public-server-list)). The switch to announce the server stays greyed out until the details are complete and would pass the list's own checks.
+- **Require passwords:** new players must choose a password (Luanti's `disallow_empty_password`, kept in `world/settings.txt`). Without it, an account made with an empty password can be used by anyone who types that name. Switching announcing on turns it on as well, and you can turn it off again. Accounts already made with an empty password keep working; the administrator can give them one with `/setpassword <name> <password>`.
 - **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
 - **The hotspot's name and password.**
 
@@ -126,7 +127,7 @@ server_announce_send_players = true
 - `server_announce_send_players`: whether the list shows the names of the players online, or only how many there are.
 - `serverlist_url`: not on the page; only for announcing to a list of your own (the default is `https://servers.luanti.org`).
 
-For players outside your home to join, your router must forward **UDP** port 30000 to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account.
+For players outside your home to join, your router must forward **UDP** port 30000 to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account, so turn on **Require passwords** on the settings page (it comes on with announcing); the list then shows the server as needing a password.
 
 How it works, as a Luanti server does it:
 

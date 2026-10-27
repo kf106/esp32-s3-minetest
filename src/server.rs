@@ -1704,6 +1704,13 @@ impl Server {
         let mechs = peer.allowed_auth_mechs;
 
         if msg.is_empty {
+            // Luanti's disallow_empty_password (handleCommand_FirstSrp): a
+            // new account must have one. The client says why.
+            if self.settings.no_empty_passwords() {
+                info!("{name} tried to register with an empty password; refused (disallow_empty_password)");
+                self.deny(from, AccessDenied::EmptyPassword, "");
+                return;
+            }
             warn!("{name} is registering with an empty password");
         }
         let account = Account {
@@ -7854,6 +7861,7 @@ impl Server {
                 max_players: self.max_players,
                 game_time: self.clock.game_time(),
                 creative: self.settings.creative(),
+                passwords_required: self.settings.no_empty_passwords(),
             }
         });
         self.announcer = Some(a);

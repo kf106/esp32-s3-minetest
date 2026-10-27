@@ -2,7 +2,7 @@
 127.0.0.1, without the Wi-Fi and hotspot sections. The page and its
 textures load; a bad form is refused without saving (announcing without a
 description, or with a private address); a good one writes motd.txt,
-world/settings.txt and server.txt, tells the connected player the server
+world/settings.txt (with passwords required) and server.txt, tells the connected player the server
 is restarting (with "reconnect"), and the server restarts in place: the
 same process answers again, with the new settings.
 
@@ -51,7 +51,7 @@ print("announcing refused without a description, or with a private address")
 
 status, page = post([("tnt", "on"), ("creative", "on"), ("motd", "Hello\r\nthere"),
                      ("ann_on", "on"), ("ann_name", "Minetest on a Stick"), ("ann_desc", "A small world.\nBe nice"),
-                     ("ann_url", ""), ("ann_addr", "mc.zalmanac.com"), ("ann_port", "30001"), ("restart", "pc")])
+                     ("ann_url", ""), ("ann_addr", "mc.zalmanac.com"), ("ann_port", "30001"), ("nopw", "on"), ("restart", "pc")])
 assert status == 200 and "The server is restarting" in page, page[:300]
 print("saved")
 
@@ -66,7 +66,7 @@ assert m[2] == 11 and m[5 + n] == 1, m
 print("player told:", m[5:5 + n].decode())
 
 settings = open(os.path.join(data, "world", "settings.txt")).read()
-assert "enable_fire = false" in settings and "enable_tnt = true" in settings and "enable_mobs = false" in settings and "creative_mode = true" in settings, settings
+assert "enable_fire = false" in settings and "enable_tnt = true" in settings and "enable_mobs = false" in settings and "creative_mode = true" in settings and "disallow_empty_password = true" in settings, settings
 assert open(os.path.join(data, "motd.txt")).read() == "Hello\nthere\n"
 server = open(os.path.join(data, "server.txt")).read()
 for want in ["server_announce = true", "server_name = Minetest on a Stick", "server_description = A small world. Be nice",
@@ -86,7 +86,17 @@ while time.time() < end and page is None:
         pass
 assert page is not None, "the page didn't come back"
 os.kill(pid, 0)  # still the same process
-assert 'name="creative" checked' in page and 'name="ann_on" checked>' in page, "not the new settings"
+assert 'name="creative" checked' in page and 'name="ann_on" checked>' in page and 'name="nopw" checked' in page, "not the new settings"
 c2 = Client("Tester2", port); c2.login(); c2.playerpos()
+# Passwords required now: a newcomer with an empty one is refused, with
+# reason 7 (empty password), as Luanti refuses them.
+c3 = Client("Nopass", port)
+name = c3.name.encode()
+c3.send(0, struct.pack(">HBHHH", 0x02, 29, 0, 37, 53) + struct.pack(">H", len(name)) + name)
+c3.wait_for(0x02)
+c3.send(0, struct.pack(">H", 0x50) + struct.pack(">H", 16) + bytes(16) + struct.pack(">H", 1) + b"\x01" + b"\x01")
+m = c3.wait_for(0x0A)
+assert m[2] == 7, m
+print("an empty password is refused")
 print("restarted in place: the page and the game are back, with the new settings")
 print("CONFIG PAGE OK")
