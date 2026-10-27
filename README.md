@@ -34,7 +34,7 @@ How it differs from a real Luanti server: no Lua mods (the game is built in), on
 
 ## Quick start
 
-You need a [supported board](docs/hardware.md) (the Waveshare ESP32-S3-LCD-1.47, or LCDwiki's ES3C28P / ES3N28P), a USB cable, and optionally a microSD card formatted as FAT32.
+You need a [supported board](docs/hardware.md) (the Waveshare ESP32-S3-LCD-1.47, LCDwiki's ES3C28P / ES3N28P, or LilyGO's T-Display-S3), a USB cable, and optionally a microSD card formatted as FAT32.
 
 ### From your browser
 
@@ -48,7 +48,7 @@ Open the **[web installer](https://kf106.github.io/esp32-s3-minetest/)** in Chro
    espup install
    . ~/export-esp.sh
    ```
-2. Build and flash, with your Wi-Fi details (add `BOARD=es3c28p` for the LCDwiki board). The first build is slow.
+2. Build and flash, with your Wi-Fi details (add `BOARD=es3c28p` for the LCDwiki board, `BOARD=tdisplays3` for the T-Display-S3). The first build is slow.
    ```
    WIFI_SSID='your network' WIFI_PASS='your password' cargo run --release
    ```

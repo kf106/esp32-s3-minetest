@@ -76,6 +76,15 @@ footer{max-width:820px;margin:0 auto;padding:0 16px;color:var(--dim);font-size:1
       <span slot="not-allowed" class="not-allowed">This page must be opened over https to install.</span>
     </esp-web-install-button>
   </div>
+  <div class="board">
+    <b>LilyGO T-Display-S3</b>
+    <span class="dim">The board with a 1.9" screen and two buttons. It has no SD card slot, so the game is kept in the board's own flash (about 11 MB).</span>
+    <esp-web-install-button manifest="firmware/tdisplays3.json">
+      <button slot="activate" class="btn">Install on the T-Display-S3</button>
+      <span slot="unsupported" class="unsupported">Your browser can't do this: use Chrome or Edge on a computer.</span>
+      <span slot="not-allowed" class="not-allowed">This page must be opened over https to install.</span>
+    </esp-web-install-button>
+  </div>
 </div>
 </section>
 
@@ -84,7 +93,7 @@ footer{max-width:820px;margin:0 auto;padding:0 16px;color:var(--dim);font-size:1
 <ul>
 <li><b>Erasing:</b> the installer offers to erase the board first. Erase on a board that has never run Minetest on a Stick. On an update, don't erase: a game kept in the board's own flash (with no SD card) would be lost. A game on the SD card is never touched.</li>
 <li><b>If the board isn't found:</b> hold its BOOT button, press and release RESET (or plug the board in while holding BOOT), let go of BOOT, and try again. Close any other program using the port, such as a serial monitor.</li>
-<li><b>An SD card</b> (FAT32, any size) is best: the world, accounts and players are kept there. Without one, the board keeps the game in its own flash.</li>
+<li><b>An SD card</b> (FAT32, any size) is best: the world, accounts and players are kept there. Without one (and on the T-Display-S3, which has no slot), the board keeps the game in its own flash, and erasing the board erases the game.</li>
 </ul>
 </section>
 

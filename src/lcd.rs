@@ -10,6 +10,8 @@
 //!   power and gamma settings an ILI9341 needs (as Espressif's ILI9341
 //!   driver sends them). For now the 320x172 pages are drawn in the
 //!   middle of its 240 rows.
+//! - LilyGO T-Display-S3: a 170x320 ST7789V on an 8-bit parallel (Intel
+//!   8080) bus, through esp_lcd's i80 driver; the rest as the Waveshare's.
 
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
@@ -29,6 +31,9 @@ const PIN_DC: i32 = BOARD.lcd_dc;
 const PIN_RST: i32 = BOARD.lcd_reset;
 const PIN_BACKLIGHT: i32 = BOARD.lcd_backlight;
 const PIXEL_CLOCK_HZ: u32 = 40_000_000;
+/// The parallel bus's write clock (a byte each tick), as Espressif's i80
+/// ST7789 example: 320x172 in about 11 ms.
+const I80_CLOCK_HZ: u32 = 10_000_000;
 /// Where the pages start in the controller's 240 rows.
 const GAP: i32 = BOARD.lcd_gap;
 /// How landscape is mirrored for the board's panel (board.rs).
@@ -79,7 +84,9 @@ const SD_MOUNT: &str = "/sd";
 const DISPLAY_STACK: usize = 12 * 1024;
 
 pub struct Lcd {
-    _spi: SpiDriver<'static>,
+    /// The SPI bus, kept for as long as the screen is used (None on a
+    /// parallel bus, which esp_lcd keeps itself).
+    _spi: Option<SpiDriver<'static>>,
     io: esp_lcd_panel_io_handle_t,
     panel: esp_lcd_panel_handle_t,
     strip: *mut u8,
@@ -89,6 +96,7 @@ pub struct Lcd {
 unsafe impl Send for Lcd {}
 
 impl Lcd {
+    /// A screen on SPI.
     pub fn new(
         spi: impl SpiAnyPins + 'static,
         sclk: impl OutputPin + 'static,
@@ -114,7 +122,57 @@ impl Lcd {
         };
         let mut io: esp_lcd_panel_io_handle_t = null_mut();
         esp!(unsafe { esp_lcd_new_panel_io_spi(spi.host() as _, &io_config, &mut io) })?;
+        Self::set_up(io, Some(spi))
+    }
 
+    /// A screen on an 8-bit parallel bus (board.rs, lcd_i80).
+    pub fn new_i80() -> Result<Self, EspError> {
+        let Some(bus_pins) = &BOARD.lcd_i80 else {
+            return Err(EspError::from(ESP_ERR_NOT_SUPPORTED as esp_err_t).unwrap());
+        };
+        unsafe {
+            // Nothing is read from the screen: its read strobe stays high.
+            esp!(gpio_reset_pin(bus_pins.rd as _))?;
+            esp!(gpio_set_direction(bus_pins.rd as _, gpio_mode_t_GPIO_MODE_OUTPUT))?;
+            esp!(gpio_set_level(bus_pins.rd as _, 1))?;
+        }
+        let mut data_gpio_nums = [-1; 16];
+        data_gpio_nums[..8].copy_from_slice(&bus_pins.data);
+        let bus_config = esp_lcd_i80_bus_config_t {
+            dc_gpio_num: PIN_DC,
+            wr_gpio_num: bus_pins.wr,
+            clk_src: soc_periph_lcd_clk_src_t_LCD_CLK_SRC_DEFAULT,
+            data_gpio_nums,
+            bus_width: 8,
+            max_transfer_bytes: STRIP_BYTES,
+            sram_trans_align: 4,
+            ..Default::default()
+        };
+        let mut bus: esp_lcd_i80_bus_handle_t = null_mut();
+        esp!(unsafe { esp_lcd_new_i80_bus(&bus_config, &mut bus) })?;
+
+        // D/C low for commands, high for data. The frame's pixels are
+        // already big-endian (Frame::write_be), the order the controller
+        // takes them in, so no byte swapping.
+        let mut io_config = esp_lcd_panel_io_i80_config_t {
+            cs_gpio_num: PIN_CS,
+            pclk_hz: I80_CLOCK_HZ,
+            trans_queue_depth: 10,
+            lcd_cmd_bits: 8,
+            lcd_param_bits: 8,
+            ..Default::default()
+        };
+        io_config.dc_levels.set_dc_idle_level(0);
+        io_config.dc_levels.set_dc_cmd_level(0);
+        io_config.dc_levels.set_dc_dummy_level(0);
+        io_config.dc_levels.set_dc_data_level(1);
+        let mut io: esp_lcd_panel_io_handle_t = null_mut();
+        esp!(unsafe { esp_lcd_new_panel_io_i80(bus, &io_config, &mut io) })?;
+        Self::set_up(io, None)
+    }
+
+    /// The controller's set-up, the same whatever the bus.
+    fn set_up(io: esp_lcd_panel_io_handle_t, spi: Option<SpiDriver<'static>>) -> Result<Self, EspError> {
         // RGB element order and big-endian data are the zero defaults.
         let panel_config = esp_lcd_panel_dev_config_t {
             reset_gpio_num: PIN_RST,
@@ -215,15 +273,26 @@ impl Lcd {
     }
 }
 
-/// Start the LCD and a thread that redraws the status screen every second.
-/// If the LCD can't be started, the server carries on without it.
+/// Start the LCD (on SPI) and a thread that redraws the status screen every
+/// second. If the LCD can't be started, the server carries on without it.
+#[cfg_attr(board = "tdisplays3", allow(dead_code))]
 pub fn start(
     status: SharedStatus,
     spi: impl SpiAnyPins + 'static,
     sclk: impl OutputPin + 'static,
     mosi: impl OutputPin + 'static,
 ) {
-    let lcd = match Lcd::new(spi, sclk, mosi) {
+    launch(Lcd::new(spi, sclk, mosi), status);
+}
+
+/// As `start`, for a screen on a parallel bus (the T-Display-S3).
+#[cfg_attr(not(board = "tdisplays3"), allow(dead_code))]
+pub fn start_i80(status: SharedStatus) {
+    launch(Lcd::new_i80(), status);
+}
+
+fn launch(lcd: Result<Lcd, EspError>, status: SharedStatus) {
+    let lcd = match lcd {
         Ok(lcd) => lcd,
         Err(e) => {
             warn!("LCD not available: {e}");
@@ -437,6 +506,9 @@ impl RgbLed {
     const RESOLUTION_HZ: u32 = 10_000_000;
 
     fn new() -> Option<Self> {
+        if PIN_LED < 0 {
+            return None; // the board has none
+        }
         // One RMT symbol: `high` ticks high, then `low` ticks low.
         let symbol = |high: u32, low: u32| rmt_symbol_word_t { val: high | 1 << 15 | low << 16 };
         let started = unsafe {

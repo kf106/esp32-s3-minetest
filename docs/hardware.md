@@ -44,4 +44,21 @@ BOARD=es3c28p WIFI_SSID='your network' WIFI_PASS='your password' cargo run --rel
 ```
 That wipes a world kept in the board's flash (one on an SD card is untouched). If the monitor still shows "waiting for download" after flashing, the board has restarted into its download mode rather than the new firmware: press its RESET button, and it starts normally.
 
+### LilyGO T-Display-S3
+
+LilyGO's [**T-Display-S3**](https://lilygo.cc/products/t-display-s3) (1.9" screen) is supported with `BOARD=tdisplays3`, or from [the web installer](building.md#releases-and-the-web-installer).
+
+| | LilyGO T-Display-S3 (`BOARD=tdisplays3`) |
+|---|---|
+| Chip, memory | ESP32-S3R8: 16 MB flash, 8 MB octal PSRAM |
+| Display | 1.9" ST7789V, 170 × 320, on an 8-bit parallel (Intel 8080) bus |
+| Screen pins | D0 to D7 on 39, 40, 41, 42, 45, 46, 47, 48; WR 8, RD 9 (held high), DC 7, CS 6, RST 5, backlight 38 |
+| Power | GPIO 15 held high (powers the screen on battery) |
+| microSD | none: the game is kept in the board's flash (11 MB) |
+| RGB LED, button | none, BOOT (GPIO 0) |
+
+The status pages are 172 rows tall and the panel shows 170, so their top and bottom rows of pixels are cut off. With no SD card, the world lives in flash: `espflash erase-flash`, or erasing in the web installer, deletes it, and [the USB drive](setup.md#as-a-usb-drive) is the way to back it up. If the pages come out upside down or mirrored, flip `lcd_mirror_x` and `lcd_mirror_y` for it in `src/board.rs`.
+
+### Others
+
 Other ESP32-S3 boards with PSRAM and 16 MB of flash should work with a new entry in `src/board.rs` and their SD card and screen pins in `src/main.rs`; an SD card slot is optional. PSRAM is required: the server keeps its own data there and leaves the internal RAM to Wi-Fi and the system.

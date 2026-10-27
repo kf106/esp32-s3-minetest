@@ -20,4 +20,4 @@ debug = false
 
 # The firmware's build.rs sets cfg(board = ...); here it is the default.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(board, values("waveshare", "es3c28p"))', 'cfg(pc)', 'cfg(perf)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(board, values("waveshare", "es3c28p", "tdisplays3"))', 'cfg(pc)', 'cfg(perf)'] }

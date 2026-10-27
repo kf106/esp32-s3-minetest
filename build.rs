@@ -20,7 +20,8 @@
 //! kept. Without it, none of this is measured.
 //!
 //! `BOARD=es3c28p cargo run --release` builds for LCDwiki's ES3C28P or
-//! ES3N28P instead of the Waveshare ESP32-S3-LCD-1.47 (see src/board.rs).
+//! ES3N28P instead of the Waveshare ESP32-S3-LCD-1.47, and
+//! `BOARD=tdisplays3` for LilyGO's T-Display-S3 (see src/board.rs).
 //! Changing the board needs no `cargo clean`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -30,13 +31,14 @@ fn main() {
 
     // Which board (src/board.rs), as `cfg(board = "...")`.
     println!("cargo:rerun-if-env-changed=BOARD");
-    println!("cargo:rustc-check-cfg=cfg(board, values(\"waveshare\", \"es3c28p\"))");
+    println!("cargo:rustc-check-cfg=cfg(board, values(\"waveshare\", \"es3c28p\", \"tdisplays3\"))");
     // cfg(pc): set by pc/build.rs for the PC build (bigger caches).
     println!("cargo:rustc-check-cfg=cfg(pc)");
     let board = match std::env::var("BOARD").unwrap_or_default().to_ascii_lowercase().as_str() {
         "" | "waveshare" | "waveshare-1.47" | "esp32-s3-lcd-1.47" => "waveshare",
         "es3c28p" | "es3n28p" => "es3c28p",
-        other => panic!("Unknown BOARD \"{other}\": use waveshare (the default) or es3c28p (for the ES3C28P and ES3N28P)"),
+        "tdisplays3" | "t-display-s3" | "tdisplay-s3" | "lilygo" => "tdisplays3",
+        other => panic!("Unknown BOARD \"{other}\": use waveshare (the default), es3c28p (for the ES3C28P and ES3N28P) or tdisplays3 (LilyGO's T-Display-S3)"),
     };
     println!("cargo:rustc-cfg=board=\"{board}\"");
     if board != "waveshare" {

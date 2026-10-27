@@ -113,6 +113,15 @@ fn main() -> anyhow::Result<()> {
     let pins = p.pins;
 
     info!("Built for the {}", board::BOARD.name);
+    // Power for the screen and peripherals, where the board switches it
+    // (the T-Display-S3, on battery).
+    if let Some(pin) = board::BOARD.power_on {
+        unsafe {
+            esp_idf_svc::sys::gpio_reset_pin(pin);
+            esp_idf_svc::sys::gpio_set_direction(pin, esp_idf_svc::sys::gpio_mode_t_GPIO_MODE_OUTPUT);
+            esp_idf_svc::sys::gpio_set_level(pin, 1);
+        }
+    }
     // A speaker amplifier stays off: nothing here makes sound.
     if let Some((pin, off)) = board::BOARD.amp_off {
         unsafe {
@@ -127,6 +136,12 @@ fn main() -> anyhow::Result<()> {
     // flash. Either is mounted at /sd, so the rest of the server doesn't
     // know which.
     let card = (|| -> anyhow::Result<_> {
+        // No slot (the T-Display-S3): straight to the flash. (The
+        // Waveshare's pins below are then never set up; they only give the
+        // driver its type.)
+        if !board::BOARD.sd_slot {
+            anyhow::bail!("the board has no SD card slot");
+        }
         #[cfg(not(board = "es3c28p"))]
         let host = SdMmcHostDriver::new_4bits(
             p.sdmmc1,
@@ -189,11 +204,14 @@ fn main() -> anyhow::Result<()> {
 
     // The status screen starts now, so it can say what Wi-Fi is doing.
     let status = status::Status::new("Wi-Fi...".to_string());
-    // The screen's SPI bus: SCLK and MOSI.
-    #[cfg(not(board = "es3c28p"))]
+    // The screen's SPI bus: SCLK and MOSI; or the T-Display-S3's parallel
+    // bus (its pins in board.rs).
+    #[cfg(not(any(board = "es3c28p", board = "tdisplays3")))]
     lcd::start(status.clone(), p.spi2, pins.gpio40, pins.gpio45);
     #[cfg(board = "es3c28p")]
     lcd::start(status.clone(), p.spi2, pins.gpio12, pins.gpio11);
+    #[cfg(board = "tdisplays3")]
+    lcd::start_i80(status.clone());
 
     // Wi-Fi: the networks in wifi.txt, plus one given when building
     // (WIFI_SSID, WIFI_PASS), which is written into wifi.txt; or, if BOOT

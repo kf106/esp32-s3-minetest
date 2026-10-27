@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        board: [waveshare, es3c28p]
+        board: [waveshare, es3c28p, tdisplays3]
     steps:
       - uses: actions/checkout@v7
 
@@ -122,7 +122,7 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           mkdir -p release
-          for b in waveshare es3c28p; do
+          for b in waveshare es3c28p tdisplays3; do
             cp "out/$b.bin" "release/minetest-on-a-stick-$b-$v.bin"
           done
           (cd release && sha256sum *.bin > SHA256SUMS)
@@ -142,6 +142,7 @@ jobs:
             Or write the image for your board at address 0:
             - `minetest-on-a-stick-waveshare-*.bin`: Waveshare ESP32-S3-LCD-1.47
             - `minetest-on-a-stick-es3c28p-*.bin`: LCDwiki ES3C28P and ES3N28P
+            - `minetest-on-a-stick-tdisplays3-*.bin`: LilyGO T-Display-S3 (no SD card slot: the game is kept in flash)
 
             ```
             espflash write-bin 0x0 minetest-on-a-stick-waveshare-<version>.bin

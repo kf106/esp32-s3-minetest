@@ -22,10 +22,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Board id (as BOARD= when building), its name, and its photo in assets/.
+# Board id (as BOARD= when building), its name, and its photo in assets/
+# (None: the page shows the board without one).
 BOARDS = [
     ("waveshare", "Waveshare ESP32-S3-LCD-1.47", "server-001.jpg"),
     ("es3c28p", "LCDwiki ES3C28P / ES3N28P", "server-101.jpg"),
+    ("tdisplays3", "LilyGO T-Display-S3", None),
 ]
 
 TEXTURES = ["esp_dirt.png", "esp_grass_side.png", "default_meselamp.png", "default_tool_diamondpick.png",
@@ -70,7 +72,8 @@ def main() -> int:
             return 1
         shutil.copy(image, out / "firmware" / f"{board}.bin")
         (out / "firmware" / f"{board}.json").write_text(json.dumps(manifest(board, name, a.version), indent=2) + "\n")
-        shutil.copy(ROOT / "assets" / photo, out / "boards" / f"{board}.jpg")
+        if photo:
+            shutil.copy(ROOT / "assets" / photo, out / "boards" / f"{board}.jpg")
     for t in TEXTURES:
         shutil.copy(ROOT / "media" / t, out / "t" / t)
 
