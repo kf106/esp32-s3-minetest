@@ -72,8 +72,10 @@ pub const TOCLIENT_SRP_BYTES_S_B: u16 = 0x60;
 
 /// Highest map serialisation format we speak.
 pub const SER_FMT_VER_HIGHEST: u8 = 29;
-/// Network protocol versions we accept.
-pub const SERVER_PROTO_MIN: u16 = 37;
+/// Network protocol versions we accept: 53 only, the one tested (with
+/// Luanti 5.17); an older client is told its version doesn't match. The
+/// server list announces the same range (announce.rs).
+pub const SERVER_PROTO_MIN: u16 = 53;
 pub const SERVER_PROTO_MAX: u16 = 53;
 
 pub const AUTH_MECHANISM_SRP: u32 = 1 << 1;

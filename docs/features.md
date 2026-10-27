@@ -8,7 +8,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 
 ## The server
 
-- **Protocol:** the Luanti network protocol as spoken by Luanti 5.17 (protocol version 53), including the reliable-UDP layer with split packets, acknowledgements, resends and out-of-order delivery.
+- **Protocol:** the Luanti network protocol as spoken by Luanti 5.17 (protocol version 53), including the reliable-UDP layer with split packets, acknowledgements, resends and out-of-order delivery. Protocol 53 is the only one accepted, since it is the one tested: a client too old to speak it is told its version doesn't match.
 - **Accounts:** SRP-6a password login, the same scheme the real server uses. New players register on first connect, and passwords are never stored or sent.
 - **Up to six players at once:** a seventh is turned away with Luanti's "too many users" message. The limit is `MAX_PLAYERS` in `src/server.rs`; more players would overload the ESP32, mainly in generating map blocks when several explore at once.
 - **Welcome message:** joining players are told what the server is and who else is on.

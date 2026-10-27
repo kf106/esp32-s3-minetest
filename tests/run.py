@@ -192,7 +192,7 @@ def run_pc(program, port):
     """The PC build as a server, on a fresh data folder, with a player."""
     data = WORK / "out" / "pcdata"
     shutil.rmtree(data, ignore_errors=True)
-    server = subprocess.Popen([str(program), "--port", str(port), "--bind", "127.0.0.1", "--data", str(data), "--max-players", "3"],
+    server = subprocess.Popen([str(program), "--port", str(port), "--bind", "127.0.0.1", "--data", str(data), "--max-players", "3", "--no-config-page"],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         time.sleep(1.5)
@@ -215,27 +215,21 @@ def run_pc(program, port):
 
 def run_config(program, port, http_port):
     """The settings page (config_page.rs) on the PC build: configtest.py
-    saves new settings, and the server must then stop by itself."""
+    saves new settings through it, and the server restarts in place."""
     data = WORK / "out" / "configdata"
     shutil.rmtree(data, ignore_errors=True)
     data.mkdir(parents=True)
+    # The test switches announcing on: to nowhere, never the real list.
+    (data / "server.txt").write_text("serverlist_url = http://127.0.0.1:9\n")
     server = subprocess.Popen([str(program), "--port", str(port), "--bind", "127.0.0.1", "--data", str(data),
                                "--config-page", str(http_port)], stdout=subprocess.DEVNULL, stderr=open(WORK / "out" / "config-server.log", "w"))
     try:
         time.sleep(1.5)
         t = time.time()
-        r = subprocess.run([sys.executable, str(NET / "configtest.py"), str(port), str(http_port), str(data), str(NET / "netclient.py")],
-                           cwd=NET, capture_output=True, text=True, timeout=120)
+        r = subprocess.run([sys.executable, str(NET / "configtest.py"), str(port), str(http_port), str(data), str(server.pid),
+                            str(NET / "netclient.py")], cwd=NET, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip().splitlines()
         ok = r.returncode == 0 and out and out[-1].endswith("OK")
-        # Saving stops the PC build (the board restarts).
-        try:
-            code = server.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            code = None
-        if ok and code != 0:
-            ok = False
-            out.append(f"the server didn't stop after saving (exit code {code})")
         print(f"  {'pass' if ok else 'FAIL'}  {'config':<8} {time.time() - t:5.0f} s  {(out or [''])[-1][:90]}", flush=True)
         if not ok:
             print("\n".join("        " + l for l in out[-15:]))
@@ -246,6 +240,26 @@ def run_config(program, port, http_port):
     finally:
         server.kill()
         server.wait()
+
+
+def run_announce(program, port, http_port, list_port):
+    """Announcing on the server list (announce.rs) from the PC build:
+    announcetest.py runs a stand-in list server and the server itself."""
+    data = WORK / "out" / "announcedata"
+    shutil.rmtree(data, ignore_errors=True)
+    t = time.time()
+    try:
+        r = subprocess.run([sys.executable, str(NET / "announcetest.py"), str(program), str(port), str(http_port), str(list_port), str(data)],
+                           cwd=NET, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        print("  FAIL  announce timed out")
+        return False
+    out = (r.stdout + r.stderr).strip().splitlines()
+    ok = r.returncode == 0 and out and out[-1].endswith("OK")
+    print(f"  {'pass' if ok else 'FAIL'}  {'announce':<8} {time.time() - t:5.0f} s  {(out or [''])[-1][:90]}", flush=True)
+    if not ok:
+        print("\n".join("        " + l for l in out[-15:]))
+    return ok
 
 
 def main():
@@ -292,6 +306,7 @@ def main():
         if pc is not None:
             results.append(("pc", run_pc(pc, FIRST_PORT - 1)))
             results.append(("config", run_config(pc, FIRST_PORT - 2, FIRST_PORT - 3)))
+            results.append(("announce", run_announce(pc, FIRST_PORT - 4, FIRST_PORT - 5, FIRST_PORT - 6)))
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} of {len(results)} passed" + (f"; failed: {', '.join(failed)}" if failed else ""))
     return 1 if failed else 0

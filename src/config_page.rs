@@ -1,12 +1,15 @@
-//! The settings page: a small web page, on the board's own hotspot only,
-//! for changing what the server's files hold without a PC or the USB
-//! drive. Join the hotspot (hold BOOT for a second at start-up), open
-//! http://192.168.4.1, change things, and save: the board saves the game
-//! and restarts, on the hotspot again or on Wi-Fi.
+//! The settings page: a small web page for changing what the server's
+//! files hold. On the board it is on the board's own hotspot only, so
+//! nothing beyond the hotspot can reach it: join the hotspot (hold BOOT
+//! for a second at start-up), open http://192.168.4.1, change things, and
+//! save: the board saves the game and restarts, on the hotspot again or on
+//! Wi-Fi. The PC build serves it on 127.0.0.1 only (the first free port
+//! from 8080), without the Wi-Fi and hotspot sections, and restarts
+//! itself in place on saving.
 //!
 //! It edits:
-//! - `wifi.txt`: the networks to join, in order, and the hotspot's name
-//!   and password (wifi_config.rs);
+//! - `wifi.txt` (the board only): the networks to join, in order, and the
+//!   hotspot's name and password (wifi_config.rs);
 //! - `world/settings.txt`: fire, TNT, mobs and creative mode (settings.rs);
 //! - `motd.txt`: the welcome message (empty: the built-in one);
 //! - `server.txt`: announcing on the public server list (announce.rs).
@@ -24,14 +27,14 @@
 //! password is an open one. The hotspot's own password is shown, as the
 //! screen shows it anyway.
 //!
-//! The server is std only (no ESP-IDF HTTP server), so the PC build can
-//! run it for the tests (`--config-page`). It serves one connection at a
+//! The server is std only (no ESP-IDF HTTP server), so the PC build runs
+//! the same code (and the tests with it). It serves one connection at a
 //! time, which is plenty for one person with a phone, from its own thread
 //! on the server's core (see start). The page draws itself with the
 //! game's textures, served from the firmware (content::embedded).
 
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -61,13 +64,24 @@ pub fn restart_requested() -> bool {
 /// The files the page edits.
 #[derive(Clone)]
 pub struct Files {
-    pub wifi: PathBuf,
+    /// The Wi-Fi networks and hotspot: None in the PC build, which has no
+    /// Wi-Fi of its own, and then the page leaves those sections out.
+    pub wifi: Option<PathBuf>,
     pub motd: PathBuf,
     pub settings: PathBuf,
     /// Announcing on the server list (announce.rs).
     pub server: PathBuf,
-    /// Written to restart on the hotspot (see `take_hotspot_marker`).
-    pub hotspot_next: PathBuf,
+    /// Written to restart on the hotspot (see `take_hotspot_marker`); None
+    /// in the PC build.
+    pub hotspot_next: Option<PathBuf>,
+}
+
+impl Files {
+    /// The board's page (Wi-Fi, the hotspot, two ways to restart), rather
+    /// than the PC build's.
+    fn board(&self) -> bool {
+        self.wifi.is_some()
+    }
 }
 
 /// Whether the settings page asked for the hotspot after the restart, and
@@ -89,11 +103,23 @@ const MAX_MOTD: usize = 2000;
 const MAX_HEAD: usize = 8 * 1024;
 const MAX_BODY: usize = 16 * 1024;
 
-/// Start serving the page on `port`, in its own thread.
-pub fn start(port: u16, files: Files) -> io::Result<()> {
-    let listener = TcpListener::bind(("0.0.0.0", port))?;
-    info!("Settings page at port {port}");
-    spawn_on_server_core(move || {
+/// Start serving the page on `bind`:`port`, in its own thread. With
+/// `search`, the first free port from `port` up (the PC build: 8080 may be
+/// taken). Returns the address it is at.
+pub fn start(bind: IpAddr, port: u16, search: bool, files: Files) -> io::Result<SocketAddr> {
+    let last = if search { port.saturating_add(99) } else { port };
+    let mut tried = port;
+    let listener = loop {
+        match TcpListener::bind((bind, tried)) {
+            Ok(l) => break l,
+            Err(e) if e.kind() == io::ErrorKind::AddrInUse && tried < last => tried += 1,
+            Err(e) => return Err(io::Error::new(e.kind(), format!("settings page on {bind}:{tried}: {e}"))),
+        }
+    };
+    let addr = listener.local_addr()?;
+    info!("Settings page at http://{addr}/");
+    // The page itself is built on the heap.
+    spawn_on_server_core(b"settings\0", 12 * 1024, move || {
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
@@ -107,29 +133,30 @@ pub fn start(port: u16, files: Files) -> io::Result<()> {
                 }
             }
         }
-    })
+    })?;
+    Ok(addr)
 }
 
-/// The page's thread runs on the server loop's core (core 0) below the
-/// loop's priority: saving writes the card, and nothing is shared with
-/// the other core (an Arc in PSRAM isn't safe between them).
+/// Start a thread on the server loop's core (core 0), below the loop's
+/// priority: the settings page's, and the server list's (announce.rs).
+/// Nothing they hold is shared with the other core (an Arc in PSRAM isn't
+/// safe between them). `name` ends in a NUL; `stack` comes from internal
+/// RAM, which is short.
 #[cfg(target_os = "espidf")]
-fn spawn_on_server_core<F>(f: F) -> io::Result<()>
+pub fn spawn_on_server_core<F>(name: &'static [u8], stack: usize, f: F) -> io::Result<()>
 where
     F: FnOnce() + Send + 'static,
 {
     use esp_idf_svc::sys::{esp_pthread_get_default_config, esp_pthread_set_cfg};
-    // Internal RAM, which is short: the page itself is built on the heap.
-    const STACK: usize = 12 * 1024;
     unsafe {
         let mut cfg = esp_pthread_get_default_config();
-        cfg.thread_name = b"settings\0".as_ptr() as *const _;
+        cfg.thread_name = name.as_ptr() as *const _;
         cfg.pin_to_core = 0;
         cfg.prio = 1;
-        cfg.stack_size = STACK as _;
+        cfg.stack_size = stack as _;
         esp_pthread_set_cfg(&cfg);
     }
-    let spawned = std::thread::Builder::new().stack_size(STACK).spawn(f).map(|_| ());
+    let spawned = std::thread::Builder::new().stack_size(stack).spawn(f).map(|_| ());
     unsafe {
         let cfg = esp_pthread_get_default_config();
         esp_pthread_set_cfg(&cfg);
@@ -138,11 +165,13 @@ where
 }
 
 #[cfg(not(target_os = "espidf"))]
-fn spawn_on_server_core<F>(f: F) -> io::Result<()>
+pub fn spawn_on_server_core<F>(name: &'static [u8], _stack: usize, f: F) -> io::Result<()>
 where
     F: FnOnce() + Send + 'static,
 {
-    std::thread::Builder::new().name("settings".into()).spawn(f).map(|_| ())
+    // A PC has the room: Rust's default stack.
+    let name = String::from_utf8_lossy(name.strip_suffix(b"\0").unwrap_or(name)).into_owned();
+    std::thread::Builder::new().name(name).spawn(f).map(|_| ())
 }
 
 // ---------------------------------------------------------------------------
@@ -217,7 +246,7 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
     let no_cache = "Cache-Control: no-store\r\n";
     match (req.method.as_str(), req.path.as_str()) {
         ("GET", "/") => {
-            let page = page(&Current::read(files), None);
+            let page = page(&Current::read(files), None, files.board());
             respond(&mut stream, "200 OK", html, no_cache, page.as_bytes())
         }
         ("GET", path) if path.starts_with("/t/") => match texture(&path[3..]) {
@@ -227,13 +256,17 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
         ("POST", "/save") => {
             let form = parse_form(&req.body);
             let current = Current::read(files);
-            match settle(&form, &current) {
+            match settle(&form, &current, files.board()) {
                 Ok(new) => {
                     let saved = save(&new, files);
                     match saved {
                         Ok(()) => {
-                            info!("Settings page: saved; restarting on {}", if new.restart_on_hotspot { "the hotspot" } else { "Wi-Fi" });
-                            let page = restarting_page(&new);
+                            match (files.board(), new.restart_on_hotspot) {
+                                (false, _) => info!("Settings page: saved; restarting"),
+                                (true, true) => info!("Settings page: saved; restarting on the hotspot"),
+                                (true, false) => info!("Settings page: saved; restarting on Wi-Fi"),
+                            }
+                            let page = restarting_page(&new, files.board());
                             respond(&mut stream, "200 OK", html, no_cache, page.as_bytes())?;
                             // Close our side now, so the browser shows the
                             // reply at once, and give it time to arrive
@@ -245,13 +278,13 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
                         }
                         Err(e) => {
                             warn!("Settings page: saving: {e}");
-                            let page = page(&new.as_current(), Some(&format!("Couldn't save: {e}")));
+                            let page = page(&new.as_current(), Some(&format!("Couldn't save: {e}")), files.board());
                             respond(&mut stream, "200 OK", html, no_cache, page.as_bytes())
                         }
                     }
                 }
                 Err((shown, why)) => {
-                    let page = page(&shown, Some(&why));
+                    let page = page(&shown, Some(&why), files.board());
                     respond(&mut stream, "200 OK", html, no_cache, page.as_bytes())
                 }
             }
@@ -331,9 +364,9 @@ struct Current {
 
 impl Current {
     fn read(files: &Files) -> Self {
-        let text = storage::read(&files.wifi).map(|d| String::from_utf8_lossy(&d).into_owned()).unwrap_or_default();
+        let text = files.wifi.as_ref().and_then(|w| storage::read(w).ok()).map(|d| String::from_utf8_lossy(&d).into_owned()).unwrap_or_default();
         let parsed = wifi_config::parse(&text);
-        let settings = Settings::open(&files.settings);
+        let settings = Settings::read(&files.settings);
         Current {
             networks: parsed.networks,
             // The file always has one after start-up (wifi_config::load).
@@ -386,7 +419,7 @@ fn password_ok(pw: &str) -> bool {
 
 /// Turn the form into settings to save, or say what is wrong (with the
 /// form's values, to show again; passwords are never shown).
-fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current, String)> {
+fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<New, (Current, String)> {
     let get = |name: &str| form.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
     let on = |name: &str| get(name).is_some();
 
@@ -395,7 +428,8 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
     // of the network the row started as (orig), if any.
     let mut networks = Vec::new();
     let mut problem: Option<String> = None;
-    for i in 0..64 {
+    // (The PC build has no Wi-Fi: no rows.)
+    for i in 0..if board { 64 } else { 0 } {
         let Some(ssid) = get(&format!("ssid{i}")) else {
             continue;
         };
@@ -427,7 +461,8 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
         ssid: get("hs_ssid").unwrap_or("").trim().to_string(),
         password: get("hs_pass").unwrap_or("").to_string(),
     };
-    if let Err(why) = wifi_config::check_hotspot(&hotspot) {
+    // (The PC build's hotspot is unused: not shown, not saved.)
+    if let (true, Err(why)) = (board, wifi_config::check_hotspot(&hotspot)) {
         problem.get_or_insert(format!("The hotspot can't be used: {why}."));
     }
 
@@ -464,8 +499,8 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
         }
     }
 
-    let restart_on_hotspot = get("restart") != Some("wifi");
-    if !restart_on_hotspot && networks.is_empty() {
+    let restart_on_hotspot = board && get("restart") != Some("wifi");
+    if board && !restart_on_hotspot && networks.is_empty() {
         problem.get_or_insert("There are no Wi-Fi networks to join: add one, or restart on the hotspot.".to_string());
     }
 
@@ -489,8 +524,10 @@ fn settle(form: &[(String, String)], current: &Current) -> Result<New, (Current,
 /// Write the files. The welcome message's file is removed when it is
 /// empty, so the built-in one is used.
 fn save(new: &New, files: &Files) -> io::Result<()> {
-    storage::write(&files.wifi, wifi_config::format(&new.networks, &new.hotspot).as_bytes())?;
-    let mut settings = Settings::open(&files.settings);
+    if let Some(wifi) = &files.wifi {
+        storage::write(wifi, wifi_config::format(&new.networks, &new.hotspot).as_bytes())?;
+    }
+    let mut settings = Settings::read(&files.settings);
     settings.set_all(new.fire, new.tnt, new.mobs, new.creative);
     if new.motd.trim().is_empty() {
         match std::fs::remove_file(&files.motd) {
@@ -504,10 +541,12 @@ fn save(new: &New, files: &Files) -> io::Result<()> {
         storage::write(&files.motd, text.as_bytes())?;
     }
     storage::write(&files.server, announce::format(&new.announce).as_bytes())?;
-    if new.restart_on_hotspot {
-        std::fs::write(&files.hotspot_next, b"hotspot\n")?;
-    } else if files.hotspot_next.exists() {
-        std::fs::remove_file(&files.hotspot_next)?;
+    if let Some(marker) = &files.hotspot_next {
+        if new.restart_on_hotspot {
+            std::fs::write(marker, b"hotspot\n")?;
+        } else if marker.exists() {
+            std::fs::remove_file(marker)?;
+        }
     }
     Ok(())
 }
@@ -578,6 +617,7 @@ textarea{min-height:110px;resize:vertical}
 .btn{font:inherit;font-weight:700;color:var(--ink);cursor:pointer;background:#5a5a5a;border:3px solid #000;box-shadow:inset 2px 2px 0 #8a8a8a,inset -2px -2px 0 #333;padding:8px 14px;text-shadow:2px 2px 0 #000}
 .btn:active{box-shadow:inset 2px 2px 0 #333,inset -2px -2px 0 #8a8a8a}
 .btn.small{padding:4px 10px;min-width:38px}
+a.btn{display:inline-block;text-decoration:none}
 .btn.go{background:#3f7f24;box-shadow:inset 2px 2px 0 #73b84a,inset -2px -2px 0 #24521a}
 .btn.water{background:#2a5fb0 url(/t/default_water.png);background-size:48px;box-shadow:inset 2px 2px 0 #6b9ee6,inset -2px -2px 0 #173a73}
 .err{background:#5a1a17;border:3px solid #000;padding:10px 12px;margin:16px 0;box-shadow:inset 2px 2px 0 #8c3a35}
@@ -595,19 +635,22 @@ body.saving .busy{display:flex}
 "#;
 
 const SCRIPT: &str = r#"
+// The network list (the board's page only).
 const list=document.getElementById('nets'),tmpl=document.getElementById('blank');
+if(list){
 function add(){const r=tmpl.content.firstElementChild.cloneNode(true);list.appendChild(r);r.querySelector('input').focus();}
 list.addEventListener('click',e=>{const b=e.target.closest('button[data-do]');if(!b)return;e.preventDefault();const r=b.closest('.net');
 if(b.dataset.do==='up'&&r.previousElementSibling)list.insertBefore(r,r.previousElementSibling);
 if(b.dataset.do==='down'&&r.nextElementSibling)list.insertBefore(r.nextElementSibling,r);
 if(b.dataset.do==='del')r.remove();});
 document.getElementById('add').addEventListener('click',e=>{e.preventDefault();add();});
+document.getElementById('show').addEventListener('change',e=>{document.getElementById('hs_pass').type=e.target.checked?'text':'password';});}
 document.getElementById('f').addEventListener('submit',e=>{
 if(document.body.classList.contains('saving')){e.preventDefault();return;}
-list.querySelectorAll('.net').forEach((r,i)=>{
+if(list)list.querySelectorAll('.net').forEach((r,i)=>{
 r.querySelector('[data-n=ssid]').name='ssid'+i;r.querySelector('[data-n=pass]').name='pass'+i;r.querySelector('[data-n=orig]').name='orig'+i;});
-const wifi=e.submitter&&e.submitter.value==='wifi';
-document.getElementById('busy_what').textContent=wifi?'Saving, then restarting on Wi-Fi':'Saving, then restarting on the hotspot';
+const to=e.submitter&&e.submitter.value;
+document.getElementById('busy_what').textContent=to==='wifi'?'Saving, then restarting on Wi-Fi':to==='hotspot'?'Saving, then restarting on the hotspot':'Saving, then restarting';
 document.body.classList.add('saving');});
 function annProblem(){
 const v=id=>document.getElementById(id).value.trim();
@@ -634,7 +677,6 @@ function annCheck(){const why=annProblem(),sw=document.getElementById('ann_on');
 sw.disabled=!!why;if(why)sw.checked=false;document.getElementById('ann_hint').textContent=why;}
 ['ann_name','ann_desc','ann_url','ann_addr','ann_port'].forEach(i=>document.getElementById(i).addEventListener('input',annCheck));
 annCheck();
-document.getElementById('show').addEventListener('change',e=>{document.getElementById('hs_pass').type=e.target.checked?'text':'password';});
 "#;
 
 /// One network's row. `i` numbers the fields for a browser without the
@@ -663,21 +705,57 @@ fn toggle(name: &str, icon: &str, title: &str, note: &str, on: bool) -> String {
     )
 }
 
-fn page(c: &Current, error: Option<&str>) -> String {
-    let mut rows = String::new();
-    for (i, net) in c.networks.iter().enumerate() {
-        // A network the files already know keeps its password when the
-        // field is left empty.
-        rows.push_str(&network_row(i, &net.ssid, true));
-    }
-    // One empty row to fill in, for a browser without the script.
-    rows.push_str(&network_row(c.networks.len(), "", false));
+fn page(c: &Current, error: Option<&str>, board: bool) -> String {
+    // The Wi-Fi networks and the hotspot: the board's only.
+    let wifi = if board {
+        let mut rows = String::new();
+        for (i, net) in c.networks.iter().enumerate() {
+            // A network the files already know keeps its password when the
+            // field is left empty.
+            rows.push_str(&network_row(i, &net.ssid, true));
+        }
+        // One empty row to fill in, for a browser without the script.
+        rows.push_str(&network_row(c.networks.len(), "", false));
+        format!(
+            r#"<section><h2><img src="/t/default_mese_crystal.png" alt="">Wi-Fi networks</h2>
+<div id="nets">{rows}</div>
+<template id="blank">{blank}</template>
+<p><button class="btn" id="add">+ Add a network</button></p>
+<p class="note">The board joins the first network on the list that it can see. Saved passwords are never shown here: leave a password empty to keep it.</p></section>
+<section><h2><img src="/t/esp_torch_on_floor.png" alt="">The board's hotspot</h2>
+<label class="field">Hotspot name</label><input type="text" name="hs_ssid" value="{hs_ssid}" maxlength="32" required autocomplete="off" autocapitalize="off" spellcheck="false">
+<label class="field">Hotspot password</label><input type="password" id="hs_pass" name="hs_pass" value="{hs_pass}" maxlength="64" autocomplete="off">
+<label class="field"><input type="checkbox" id="show"> Show the password</label>
+<p class="note">8 to 63 characters, or empty for an open hotspot. If you change these, join the new hotspot after the restart.</p></section>
+"#,
+            blank = network_row(0, "", false),
+            hs_ssid = esc(&c.hotspot.ssid),
+            hs_pass = esc(&c.hotspot.password),
+        )
+    } else {
+        String::new()
+    };
+    let (sub, buttons, busy_note, machine) = if board {
+        (
+            "Minetest Game on an ESP32. Changes are saved when the board restarts.",
+            r#"<button class="btn go" name="restart" value="hotspot">Save and restart on the hotspot</button><button class="btn water" name="restart" value="wifi">Save and restart on Wi-Fi</button>"#,
+            "Don't switch the board off. This takes a few seconds; the board then restarts and this page shows what happens next.",
+            "the board",
+        )
+    } else {
+        (
+            "Minetest Game on this computer. Changes are saved when the server restarts.",
+            r#"<button class="btn go" name="restart" value="pc">Save and restart the server</button>"#,
+            "This takes a few seconds; the server then restarts, and this page comes back by itself.",
+            "this computer",
+        )
+    };
     let error = error.map(|e| format!(r#"<div class="err"><b>Not saved.</b> {}</div>"#, esc(e))).unwrap_or_default();
     format!(
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Server settings</title><link rel="icon" href="/t/default_meselamp.png"><style>{STYLE}</style></head><body>
 <header></header>
-<div class="title"><img src="/t/default_meselamp.png" alt=""><div><h1>Server settings</h1><p class="sub">Minetest Game on an ESP32. Changes are saved when the board restarts.</p></div></div>
+<div class="title"><img src="/t/default_meselamp.png" alt=""><div><h1>Server settings</h1><p class="sub">{sub}</p></div></div>
 <main><form id="f" method="post" action="/save">{error}
 <section><h2><img src="/t/default_tool_diamondpick.png" alt="">Game rules</h2>
 <div class="toggles">
@@ -695,21 +773,11 @@ fn page(c: &Current, error: Option<&str>) -> String {
 <div class="two"><div><label class="field" for="ann_addr">Domain name (optional)</label><input type="text" id="ann_addr" name="ann_addr" value="{ann_addr}" maxlength="255" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="your public address"></div>
 <div><label class="field" for="ann_port">Port players use (optional)</label><input type="text" id="ann_port" name="ann_port" value="{ann_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="30000"></div></div>
 <label class="field"><input type="checkbox" name="ann_players"{ann_players}> Show the names of the players online</label>
-<p class="note">For players outside your home to join, your router must forward UDP port 30000 to the board (and your internet connection must have its own public address: most mobile ones don't). Once listed, anyone can join and make an account. Leave the domain name empty unless you have one pointing at your home; the port too, unless your router forwards a different one.</p></section>
-<section><h2><img src="/t/default_mese_crystal.png" alt="">Wi-Fi networks</h2>
-<div id="nets">{rows}</div>
-<template id="blank">{blank}</template>
-<p><button class="btn" id="add">+ Add a network</button></p>
-<p class="note">The board joins the first network on the list that it can see. Saved passwords are never shown here: leave a password empty to keep it.</p></section>
-<section><h2><img src="/t/esp_torch_on_floor.png" alt="">The board's hotspot</h2>
-<label class="field">Hotspot name</label><input type="text" name="hs_ssid" value="{hs_ssid}" maxlength="32" required autocomplete="off" autocapitalize="off" spellcheck="false">
-<label class="field">Hotspot password</label><input type="password" id="hs_pass" name="hs_pass" value="{hs_pass}" maxlength="64" autocomplete="off">
-<label class="field"><input type="checkbox" id="show"> Show the password</label>
-<p class="note">8 to 63 characters, or empty for an open hotspot. If you change these, join the new hotspot after the restart.</p></section>
-</main>
-<div class="bar"><div><button class="btn go" name="restart" value="hotspot">Save and restart on the hotspot</button><button class="btn water" name="restart" value="wifi">Save and restart on Wi-Fi</button></div></div>
+<p class="note">For players outside your home to join, your router must forward UDP port 30000 to {machine} (and your internet connection must have its own public address: most mobile ones don't). Once listed, anyone can join and make an account. Leave the domain name empty unless you have one pointing at your home; the port too, unless your router forwards a different one.</p></section>
+{wifi}</main>
+<div class="bar"><div>{buttons}</div></div>
 </form>
-<div class="busy" role="status" aria-live="polite"><div><img src="/t/default_mese_crystal.png" alt=""><b id="busy_what">Saving</b><p>Don't switch the board off. This takes a few seconds; the board then restarts and this page shows what happens next.</p></div></div>
+<div class="busy" role="status" aria-live="polite"><div><img src="/t/default_mese_crystal.png" alt=""><b id="busy_what">Saving</b><p>{busy_note}</p></div></div>
 <script>const MAXN={max_name},MAXD={max_desc};{SCRIPT}</script></body></html>"#,
         fire = toggle("fire", "fire_basic_flame.png", "Fire", "Spreads and burns", c.fire),
         tnt = toggle("tnt", "tnt_side.png", "TNT", "Can be lit", c.tnt),
@@ -728,17 +796,20 @@ fn page(c: &Current, error: Option<&str>) -> String {
         max_name = announce::MAX_NAME,
         max_desc = announce::MAX_DESCRIPTION,
         max_url = announce::MAX_URL,
-        blank = network_row(0, "", false),
-        hs_ssid = esc(&c.hotspot.ssid),
-        hs_pass = esc(&c.hotspot.password),
     )
 }
 
-fn restarting_page(new: &New) -> String {
-    let (what, then) = if new.restart_on_hotspot {
+fn restarting_page(new: &New, board: bool) -> String {
+    let comes_back = !board || new.restart_on_hotspot;
+    let (what, then) = if !board {
+        (
+            "The server is restarting with the new settings.".to_string(),
+            "Players connected are told, and can reconnect in a few seconds. This page comes back by itself.".to_string(),
+        )
+    } else if new.restart_on_hotspot {
         (
             format!("The board is restarting on its hotspot, <b>{}</b>.", esc(&new.hotspot.ssid)),
-            "In half a minute or so, rejoin the hotspot if your phone has left it, and open this page again if you need it.".to_string(),
+            "In half a minute or so, rejoin the hotspot if your phone or computer has left it. This page goes back to the settings by itself once the board answers.".to_string(),
         )
     } else {
         let first = new.networks.first().map(|n| esc(&n.ssid)).unwrap_or_default();
@@ -751,7 +822,31 @@ fn restarting_page(new: &New) -> String {
         r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Restarting</title><style>{STYLE}{inline}</style></head><body><header></header>
 <div class="title"><img src="{lamp}" alt=""><div><h1>Saved</h1><p class="sub">The game is saved before the restart.</p></div></div>
-<main><section><h2><img src="{crystal}" alt="">Restarting</h2><p>{what}</p><p class="note">{then}</p></section></main></body></html>"#,
+<main><section><h2><img src="{crystal}" alt="">Restarting</h2><p>{what}</p><p class="note">{then}</p>{back}</section></main>
+<script>
+// A refresh asks for the settings again, rather than sending the form a
+// second time.
+history.replaceState(null,'','/');
+{poll}</script></body></html>"#,
+        // Where the page will be there again (the PC build, or the board
+        // back on its hotspot): a way back, and a check every 1.5 s that
+        // goes back by itself once the server answers. Not at once: the
+        // old server answers until it stops.
+        back = if comes_back {
+            r#"<p class="hint" id="wait"></p><p><a class="btn go" href="/">Back to the settings</a></p>"#.to_string()
+        } else {
+            String::new()
+        },
+        poll = if comes_back {
+            format!(
+                "const w=document.getElementById('wait');let n=0;\
+                 setTimeout(()=>{{const t=setInterval(()=>{{n++;w.textContent='Waiting for the {who} to come back'+'.'.repeat(n%4);\
+                 fetch('/',{{cache:'no-store'}}).then(r=>{{if(r.ok){{clearInterval(t);w.textContent='It is back. Opening the settings...';location.replace('/');}}}}).catch(()=>{{}});}},1500);}},4000);",
+                who = if board { "board" } else { "server" },
+            )
+        } else {
+            String::new()
+        },
         // The server is gone by the time the browser asks for textures, so
         // this page carries its own.
         inline = format!(
@@ -831,7 +926,7 @@ mod tests {
             ("fire", "on"), ("creative", "on"), ("motd", "Hi\r\nthere"),
             ("restart", "wifi"),
         ]);
-        let new = settle(&f, &current()).ok().unwrap();
+        let new = settle(&f, &current(), true).ok().unwrap();
         assert_eq!(new.networks, vec![net("Cafe", ""), net("Home", "secret123"), net("Office", "hunter22")]);
         assert_eq!(new.hotspot, net("Den", "drawbridge"));
         assert_eq!((new.fire, new.tnt, new.mobs, new.creative), (true, false, false, true));
@@ -842,7 +937,7 @@ mod tests {
     #[test]
     fn renamed_network_keeps_its_password() {
         let f = form(&[("ssid0", "Home 5G"), ("pass0", ""), ("orig0", "Home"), ("hs_ssid", "Den"), ("hs_pass", "")]);
-        let new = settle(&f, &current()).ok().unwrap();
+        let new = settle(&f, &current(), true).ok().unwrap();
         assert_eq!(new.networks, vec![net("Home 5G", "secret123")]);
         assert!(new.restart_on_hotspot);
     }
@@ -853,7 +948,7 @@ mod tests {
         let bad = |extra: &[(&str, &str)]| {
             let mut f = form(&base);
             f.extend(form(extra));
-            settle(&f, &current()).err().map(|(_, why)| why)
+            settle(&f, &current(), true).err().map(|(_, why)| why)
         };
         assert!(bad(&[("ssid0", "Office"), ("pass0", "short")]).unwrap().contains("8 to 63"));
         assert!(bad(&[("ssid0", "A"), ("ssid1", "A")]).unwrap().contains("twice"));
@@ -861,7 +956,7 @@ mod tests {
         assert!(bad(&[("restart", "wifi")]).unwrap().contains("no Wi-Fi networks"));
         let mut f = form(&[("hs_ssid", "Den"), ("hs_pass", "short")]);
         f.push(("ssid0".into(), "Home".into()));
-        assert!(settle(&f, &current()).err().unwrap().1.contains("hotspot"));
+        assert!(settle(&f, &current(), true).err().unwrap().1.contains("hotspot"));
         // Fine: an open network, a hex key.
         assert!(bad(&[("ssid0", "Open"), ("ssid1", "Hex"), ("pass1", &"a".repeat(64))]).is_none());
     }
@@ -875,9 +970,22 @@ mod tests {
     }
 
     #[test]
+    fn pc_page_has_no_wifi() {
+        // No Wi-Fi rows or hotspot to check, and one way to restart.
+        let f = form(&[("ssid0", "x"), ("pass0", "short"), ("hs_ssid", ""), ("fire", "on"), ("restart", "pc")]);
+        let new = settle(&f, &current(), false).ok().unwrap();
+        assert!(new.networks.is_empty() && !new.restart_on_hotspot && new.fire);
+        let html = page(&current(), None, false);
+        assert!(!html.contains("Wi-Fi networks") && !html.contains("The board's hotspot") && html.contains("Save and restart the server"));
+        assert!(html.contains("to this computer"));
+        let html = page(&current(), None, true);
+        assert!(html.contains("Wi-Fi networks") && html.contains("Save and restart on the hotspot") && html.contains("to the board"));
+    }
+
+    #[test]
     fn page_never_shows_network_passwords() {
         let c = current();
-        let html = page(&c, Some("<oops>"));
+        let html = page(&c, Some("<oops>"), true);
         assert!(!html.contains("secret123"));
         assert!(html.contains("minetest")); // the hotspot's, as on the screen
         assert!(html.contains("&lt;oops&gt;"));
@@ -889,11 +997,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("config_page_test_{}", std::process::id()));
         std::fs::create_dir_all(dir.join("world")).unwrap();
         let files = Files {
-            wifi: dir.join("wifi.txt"),
+            wifi: Some(dir.join("wifi.txt")),
             motd: dir.join("motd.txt"),
             settings: dir.join("world/settings.txt"),
             server: dir.join("server.txt"),
-            hotspot_next: dir.join("boot-hotspot"),
+            hotspot_next: Some(dir.join("boot-hotspot")),
         };
         let new = New {
             networks: vec![net("Home", "secret123")],
@@ -907,20 +1015,21 @@ mod tests {
             restart_on_hotspot: true,
         };
         save(&new, &files).unwrap();
-        let parsed = wifi_config::parse(&std::fs::read_to_string(&files.wifi).unwrap());
+        let parsed = wifi_config::parse(&std::fs::read_to_string(files.wifi.as_ref().unwrap()).unwrap());
         assert_eq!(parsed.networks, new.networks);
         assert_eq!(parsed.hotspot, Some(new.hotspot.clone()));
         let s = Settings::open(&files.settings);
         assert_eq!((s.fire(), s.tnt(), s.mobs(), s.creative()), (false, true, true, false));
         assert_eq!(std::fs::read_to_string(&files.motd).unwrap(), "Welcome!\n");
         assert_eq!(announce::read(&files.server), new.announce);
-        assert!(take_hotspot_marker(&files.hotspot_next));
-        assert!(!take_hotspot_marker(&files.hotspot_next));
+        let marker = files.hotspot_next.clone().unwrap();
+        assert!(take_hotspot_marker(&marker));
+        assert!(!take_hotspot_marker(&marker));
         // An empty message goes back to the built-in one.
         let new = New { motd: "  ".into(), restart_on_hotspot: false, ..new };
         save(&new, &files).unwrap();
         assert!(!files.motd.exists());
-        assert!(!files.hotspot_next.exists());
+        assert!(!marker.exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

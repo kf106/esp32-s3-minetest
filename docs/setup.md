@@ -101,6 +101,7 @@ Things to know:
 
 - **Only on the hotspot:** the page isn't there when the board has joined a network, so nobody on your home network or the internet can reach it.
 - **Anyone on the hotspot can use it:** there is no separate login. The hotspot's password is the lock, and the screen shows it, so anyone who can see the board can change its settings. Don't run the hotspot where that matters.
+- **The PC build has it too,** without the Wi-Fi and hotspot sections, on its own computer only: see [docs/pc.md](pc.md#the-settings-page).
 - **`wifi.txt` is rewritten:** saving writes it out afresh, so comments of your own in it are replaced by the standard ones.
 
 ## The public server list
@@ -127,7 +128,12 @@ server_announce_send_players = true
 
 For players outside your home to join, your router must forward **UDP** port 30000 to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account.
 
-The announcing itself is not built yet: so far the board only reads these settings and logs that it would announce.
+How it works, as a Luanti server does it:
+
+- **When:** a few seconds after start-up the server announces itself ("start"), then again every 5 minutes ("update", with the players online and how long it has been up). The list drops a server it hasn't heard from for five and a half minutes, so a board that is switched off falls off by itself. Switching announcing off on the settings page (or changing the port or domain name) takes the old entry off at once when the board restarts. Not from the hotspot: it has no internet.
+- **What the list shows:** the name, description and website; the players (or only how many); creative mode, or the heart for damage (players can't hurt each other here, so never the sword); and the version as `esp32-s3-minetest-0.1.0`, since this isn't Luanti itself. Only Luanti clients that speak protocol 53 (Luanti 5.17 tested) see it, as those are the only ones the server lets in.
+- **The check:** after each announcement the list tries the game port from outside, as a client would. If that fails (no port forwarding, or a shared public address), the board isn't listed, and the next announcement hears why: the log says "did not respond to ping", and the status screen shows "Server list: can't reach us". The status screen also shows "Server list: announced" when it starts, and "Server list: no answer" if the list can't be reached (it then tries again every minute).
+- **Its cost:** each announcement is an HTTPS request, a second or two of work in the background. The board stays fully awake (no Wi-Fi power saving) for half a minute after each, so it answers the list's check promptly.
 
 ## Welcome message
 

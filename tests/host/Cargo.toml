@@ -11,6 +11,9 @@ edition = "2021"
 [dependencies]
 log = "0.4"
 qrcodegen = "1.8"
+# Announcing on the public server list over HTTPS (announce.rs); the board
+# uses ESP-IDF's own HTTP client instead.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [profile.release]
 debug = false

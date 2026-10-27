@@ -622,6 +622,7 @@ fn serve(port: &str) {
         media: content::Media::load(&format!("{d}/media")),
         status: status::Status::new(format!("127.0.0.1:{port}")),
         max_players: server::MAX_PLAYERS,
+        announcer: None,
     };
     {
         // Report Wi-Fi power saving changes.

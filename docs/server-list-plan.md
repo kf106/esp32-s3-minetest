@@ -1,6 +1,6 @@
 # Handoff: announcing to the public server list
 
-Status: the settings are done (`server.txt`, src/announce.rs, and the settings page); the announcing itself (the HTTP posts) is next.
+Status: built. The settings (`server.txt` and the settings page) and the announcing itself (src/announce.rs) are done and tested from the PC build; the board's build of the announcing is not yet tested on a board.
 
 Goal: let the board announce itself to the public Luanti server list
 (servers.luanti.org), so players see it in the client's Join Game tab, as a
@@ -96,46 +96,81 @@ ESP-IDF v5.5.1 `components/mbedtls/Kconfig`.
 - **The HTTP client:** esp-idf-svc's `http::client::EspHttpConnection` with
   `crt_bundle_attach`, or esp_http_client directly through esp-idf-sys.
 
-## Proposed design
+## As built (October 2026)
 
-- **A new module, `src/announce.rs`,** running its own thread. It does a
-  `start` once Wi-Fi is up and the server is ready, then an `update` every
-  300 s. It sends `delete` only if the server shuts down cleanly (rare on the
-  board; purging covers the rest).
-- **Threading:**
-  - Pin the thread to **core 0**, the same core as the server loop, at low
-    priority. Then no Arc or atomic crosses between the cores. See "No Arc
-    shared between the cores" in development.md: atomics in PSRAM aren't
-    atomic between the cores on the ESP32-S3.
-  - The server loop hands over a by-value snapshot (player names, uptime,
-    game time, settings flags) through a static Mutex, which lives in
-    internal RAM.
-  - The TLS handshake (about 1 s of CPU) then never stalls the server loop or
-    the block builder.
-  - Allow about 10 KB of stack for TLS.
-- **The JSON:** the project has `src/jsonstring.rs` for string escaping.
-  - `version`: honest, e.g. "esp32-s3-minetest <version>".
-  - `proto_min`/`proto_max`: from SERVER_PROTO_MIN/MAX in messages.rs (37
-    and 53 at present; see the open questions).
-  - `gameid`: "minetest".
-  - `clients_max`: server::MAX_PLAYERS (6), or the PC build's
-    Setup::max_players.
-  - `creative` and `damage`: from world settings (settings.rs).
-  - `password`: false, unless we refuse empty passwords.
-  - `dedicated`: true.
-  - `mapgen`: "v7".
-  - `mods`: optional; leave it out, or list the built-in MTG mod names.
-- **Power saving:** an empty server dozes (now only when nobody is
-  connected). On the TP-Link Deco a dozing board answered pings 300 to 400 ms
-  late, which would inflate the listed ping (the ranking penalises over
-  0.4 s). Keep Wi-Fi awake for about 10 s after each announcement, so the
-  probe gets a prompt reply.
-- **The PC build:** pc/ could use the same code via a std-only HTTP client,
-  or skip announcing at first.
-- **Logging:** log the list server's reply body. It returns
-  human-readable errors, such as "did not respond to ping" or "server_address
-  ... is private", which help the user debug port forwarding. Show "listed"
-  or the error on the screen's Device page.
+- **src/announce.rs:** the settings (below), the announcement and the
+  `Announcer`.
+  - `json(...)` builds Luanti's fields.
+  - `form(...)` wraps them as Luanti's multipart form (one field, `json`).
+  - `understand(...)` reads server.py's replies: 202 filed, 409 filed but
+    the last one failed (for instance "did not respond to ping"), 200 "not
+    found" (update for an unknown server: start again), 400/403/413 refused.
+- **Threading:** a thread `announce`, started by `Announcer::start` with
+  `config_page::spawn_on_server_core` (core 0, priority 1, a 12 KB stack on
+  the board for TLS).
+  - The server loop (`Server::announce`, each tick) sends it a by-value
+    `Snapshot` through an mpsc channel when an announcement is due, and
+    reads back how it went: a full EVERY (300 s) after success, RETRY (60 s)
+    after failure.
+  - Both ends are on core 0, so the channel's PSRAM memory never crosses
+    cores. The first announcement goes 5 s after start-up.
+- **Posting:**
+  - The board uses `esp_idf_svc::http::client::EspHttpConnection` with
+    `crt_bundle_attach: esp_crt_bundle_attach` and a 20 s timeout.
+  - The PC build and the tests use ureq (rustls).
+  - sdkconfig.defaults sets `CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y`, so TLS's
+    big buffers go to PSRAM.
+- **The fields:**
+  - `version` "esp32-s3-minetest-0.1.0" (or "-pc-"; the list strips
+    spaces).
+  - `proto_min` and `proto_max` from SERVER_PROTO_MIN/MAX, now **53 and 53**:
+    the server accepts protocol 53 only, as tested (Keir's decision).
+  - `gameid` "minetest"; `creative` from world settings; `damage` = not
+    creative; `pvp` false (players can't hurt each other); `password` false.
+  - `clients`, `clients_max`, `clients_list` (if
+    `server_announce_send_players`), `uptime` (since start-up), `game_time`.
+  - On start: `dedicated` true, `rollback` false, `privs` "interact, shout".
+  - Left out as not ours to claim: `mods`, `mapgen`, `can_see_far_names`,
+    `lag`.
+- **Power saving:** each announcement calls `Server::wake`, so the radio
+  stays awake for 30 s and answers the list's probe promptly.
+- **Delete:** at a restart for new settings
+  (`Server::restart_for_settings`), `Announcer::withdraw_if_changed` reads
+  server.txt again. If announcing is now off, or the port, address or list
+  changed, it sends "delete" and waits up to 8 s. Otherwise the restarted
+  server's "start" replaces the entry. Power loss: the list purges after
+  330 s.
+- **Not from the hotspot** (main.rs): no internet there.
+- **Reporting:**
+  - The log has every reply.
+  - The status screen's events show "Server list: announced", "Server
+    list: can't reach us" (the probe failed: port forwarding), "Server list:
+    refused" and "Server list: no answer".
+- **The PC build** announces too (Keir's decision), from its data folder's
+  server.txt, on its `--port` unless `server_announce_port` is set.
+
+### Tested
+
+- **Against the real list server:** a local copy of luanti-org/serverlist
+  (server.py under Flask, its config-example). The PC build's "start" was
+  filed (202), the list probed the game port and listed it, with all the
+  fields above and a ping. Switching announcing off on the settings page
+  sent "delete" during the restart ("Server was deleted"), and switching it
+  back on announced again.
+- **In the suite:**
+  - `tests/net/announcetest.py` (`announce`) runs a stand-in list with
+    server.py's schema and its exact probe packets: start, the probe
+    answered, delete when switched off.
+  - Unit tests cover the JSON, the form and the replies.
+  - The `config` test's server.txt points at a dead local address, so the
+    suite never announces to the real list.
+- **Not tested here:** the board build. The ESP toolchain isn't available
+  in the session that wrote it, so the board's posting code (the esp-idf-svc
+  HTTP client calls, the certificate bundle, the 12 KB stack, the mbedTLS
+  memory setting) hasn't been compiled or run. Nor the real
+  servers.luanti.org, which that session couldn't reach. First things to
+  check on the board: that it builds, that "Server list: announced" appears,
+  and the internal RAM figure in the log while announcing.
 
 ## Settings (decided and built)
 
@@ -154,21 +189,18 @@ public server list". Luanti's names where it has them:
 - `serverlist_url` (default https://servers.luanti.org; not on the page)
 
 `announce::load` gives the settings to use at start-up: with the switch on
-but the details failing `check`, it warns and turns announcing off. main.rs
-and the PC build call it and only log for now.
+but the details failing `check`, it warns and turns announcing off.
 
 ## Open questions for Keir
 
 1. ~~Settings~~: decided, see above.
-2. **Protocol range:** announce 37 to 53 as now, or only 53 until older
-   clients are tested? It is untested how far below 53 the server really
-   works, and a public listing invites older clients.
-3. **The PC build:** whether it should announce too.
+2. ~~Protocol range~~: 53 only, decided; the server accepts no other.
+3. ~~The PC build~~: announces too, decided.
 4. **Admission:** with a public listing, anyone can register an account.
    Consider a setting to refuse new accounts, or a whitelist, before listing
    publicly.
 
-## User-side requirements (for docs/setup.md when built)
+## User-side requirements (now in docs/setup.md)
 
 - Forward **UDP** 30000 to the board (on a Deco: More, Advanced, NAT
   Forwarding, Port Forwarding), and give the board a fixed address (More,

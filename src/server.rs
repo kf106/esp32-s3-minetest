@@ -789,6 +789,9 @@ pub struct Server {
     welcome: Vec<String>,
     /// How many players may be in the game at once.
     max_players: usize,
+    /// Announcing on the public server list, if server.txt says to
+    /// (announce.rs).
+    announcer: Option<crate::announce::Announcer>,
     /// Sending is held back until then (see CONGESTION_BACKOFF).
     congested_until: Instant,
     /// Sends that failed since the last report, and when that was.
@@ -821,6 +824,8 @@ pub struct Setup {
     /// How many players may be in the game at once (MAX_PLAYERS on the
     /// board).
     pub max_players: usize,
+    /// Announcing on the public server list (announce.rs): None, not.
+    pub announcer: Option<crate::announce::Announcer>,
 }
 
 /// A login for the SRP thread to work out.
@@ -955,6 +960,35 @@ fn start_block_builder(status: SharedStatus, port: u16) -> Option<BlockBuilder> 
     }
 }
 
+/// The PC build's restart for new settings: run this program again, with
+/// the same arguments, in this process (so a service manager or terminal
+/// keeps it). Its sockets close on the way (Rust opens them close-on-exec),
+/// so the new one can listen on the same ports.
+#[cfg(not(target_os = "espidf"))]
+fn restart_in_place() -> ! {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let program = std::env::current_exe().unwrap_or_else(|_| std::env::args_os().next().unwrap_or_default().into());
+    info!("Restarting in place: {}", program.display());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let e = std::process::Command::new(&program).args(&args).exec();
+        log::error!("Couldn't restart ({e}): start the server again to use the new settings");
+        std::process::exit(1)
+    }
+    #[cfg(not(unix))]
+    {
+        // No exec: start it anew and leave.
+        match std::process::Command::new(&program).args(&args).spawn() {
+            Ok(_) => std::process::exit(0),
+            Err(e) => {
+                log::error!("Couldn't restart ({e}): start the server again to use the new settings");
+                std::process::exit(1)
+            }
+        }
+    }
+}
+
 /// Start a thread pinned to the second core (core 1). The server loop runs
 /// on core 0, with the Wi-Fi driver; core 1 is otherwise nearly idle.
 /// `priority` is FreeRTOS's (the server loop has 1; higher runs first).
@@ -1016,7 +1050,7 @@ impl Server {
     /// convention passes in registers, and the seventh (the status) arrived
     /// as garbage on the ESP32.
     pub fn new(setup: Setup) -> Self {
-        let Setup { socket, motd, auth, world, inventories, players, furnaces, chests, mut items, clock, door_owners, bed_spawns, settings, media, status, max_players } = setup;
+        let Setup { socket, motd, auth, world, inventories, players, furnaces, chests, mut items, clock, door_owners, bed_spawns, settings, media, status, max_players, announcer } = setup;
         // Items dropped before a restart: out of any block built over them.
         items.settle(&|x, y, z| content::walkable(world.node((x, y, z))));
         let itemdef = build_itemdef(&content::itemdef_bytes());
@@ -1188,6 +1222,7 @@ impl Server {
             rng,
             skins,
             max_players,
+            announcer,
             welcome: motd
                 .unwrap_or_else(|| welcome(max_players))
                 .lines()
@@ -1901,7 +1936,8 @@ impl Server {
 
     /// The settings page saved new settings (config_page.rs): tell the
     /// players (their clients offer to reconnect), save everything, and
-    /// restart, so the new files are read. The PC build stops instead.
+    /// restart, so the new files are read. The PC build restarts in place:
+    /// the same program, with the same arguments, in the same process.
     fn restart_for_settings(&mut self) -> ! {
         info!("Restarting for the new settings");
         let notice = build_access_denied(AccessDenied::Shutdown, "The server is restarting with new settings.", true);
@@ -1919,6 +1955,11 @@ impl Server {
         self.clock.save();
         self.furnaces.save();
         self.chests.save();
+        // Off the server list, if the new settings say not to announce it
+        // as it is now.
+        if let Some(a) = &self.announcer {
+            a.withdraw_if_changed();
+        }
         // Time for the notices to go out.
         std::thread::sleep(Duration::from_millis(300));
         #[cfg(target_os = "espidf")]
@@ -1926,10 +1967,7 @@ impl Server {
             esp_idf_svc::sys::esp_restart()
         }
         #[cfg(not(target_os = "espidf"))]
-        {
-            info!("Stopped for the new settings: start the server again to use them");
-            std::process::exit(0)
-        }
+        restart_in_place()
     }
 
     fn deny(&mut self, addr: SocketAddr, reason: AccessDenied, custom: &str) {
@@ -7803,6 +7841,32 @@ impl Server {
         crate::status::problem();
     }
 
+    /// The public server list (announce.rs): announce when it's time.
+    fn announce(&mut self) {
+        let Some(mut a) = self.announcer.take() else {
+            return;
+        };
+        let tick = a.tick(|| {
+            let mut players: Vec<String> = self.peers.values().filter(|p| p.ready).map(|p| p.display_name().to_string()).collect();
+            players.sort();
+            crate::announce::Snapshot {
+                players,
+                max_players: self.max_players,
+                game_time: self.clock.game_time(),
+                creative: self.settings.creative(),
+            }
+        });
+        self.announcer = Some(a);
+        if tick.sent {
+            // The list tries the game port in a moment: be awake to answer
+            // promptly (a dozing radio can take 300 ms or more).
+            self.wake();
+        }
+        if let Some(note) = tick.note {
+            self.event(note);
+        }
+    }
+
     fn wake(&mut self) {
         self.last_activity = Instant::now();
         if self.power_saving {
@@ -7882,6 +7946,7 @@ impl Server {
             self.climbers_checked = now;
             timed!(self, "tend_climbers", self.tend_climbers());
         }
+        timed!(self, "announce", self.announce());
         timed!(self, "update_power_saving", self.update_power_saving());
         timed!(self, "run_timers", self.run_timers());
         timed!(self, "tend_beds", self.tend_beds());

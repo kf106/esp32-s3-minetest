@@ -54,7 +54,8 @@ src/auth.rs        accounts; src/srp.rs, sha256.rs, sha1.rs: login crypto
 src/zstd.rs        a small zstd compressor for map blocks
 src/lcd.rs, screen.rs, font.rs, status.rs   the status display
 src/storage.rs     safe file writes on FAT
-src/config_page.rs the hotspot's settings page (a small HTTP server; saving restarts the server)
+src/announce.rs    the public server list: server.txt, and announcing (a thread posting to the list every 5 minutes)
+src/config_page.rs the settings page: on the board's hotspot, and on 127.0.0.1 in the PC build (a small HTTP server; saving restarts the server)
 media/             built-in textures and models
 partitions.csv     the flash layout: firmware, and room for the game without an SD card
 tools/loadtest.py  bot players for load testing (see below)

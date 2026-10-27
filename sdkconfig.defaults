@@ -54,3 +54,10 @@ CONFIG_TINYUSB_MSC_BUFSIZE=4096
 CONFIG_TINYUSB_DESC_MANUFACTURER_STRING="esp32-s3-minetest"
 CONFIG_TINYUSB_DESC_PRODUCT_STRING="Minetest on a stick"
 CONFIG_TINYUSB_DESC_MSC_STRING="Minetest on a stick"
+
+# The public server list (announce.rs) is HTTPS. mbedTLS's buffers (16 KB
+# in, 4 KB out) and handshake memory come from malloc rather than internal
+# RAM only, so those over SPIRAM_MALLOC_ALWAYSINTERNAL go in PSRAM: internal
+# RAM has no block that big to spare while the server runs. The root
+# certificate bundle is ESP-IDF's default (CONFIG_MBEDTLS_CERTIFICATE_BUNDLE).
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y

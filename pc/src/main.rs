@@ -4,6 +4,7 @@
 //!
 //!     minetest-server [--port 30000] [--bind 0.0.0.0] [--data minetest-data]
 //!                     [--max-players 15] [--log info]
+//!                     [--config-page 8080 | --no-config-page]
 //!
 //! Like the board, it saves as it goes (world changes every second,
 //! inventories within 5 s), so it can be stopped at any time with Ctrl+C
@@ -153,10 +154,11 @@ Usage: minetest-server [options]
                       (default: minetest-data)
   --max-players <n>   players in the game at once (default 15)
   --log <level>       error, warn, info or debug (default info)
-  --config-page <n>   serve the board's hotspot settings page on this TCP
-                      port, editing wifi.txt, motd.txt and
-                      world/settings.txt in the data folder; saving stops
-                      the server (for testing the page)
+  --config-page <n>   the settings page's port, or the first free one
+                      above it (default 8080), on 127.0.0.1 only: the
+                      game rules, the welcome message and the server
+                      list; saving restarts the server in place
+  --no-config-page    no settings page
   --help              this
 ";
 
@@ -166,11 +168,12 @@ struct Options {
     data: PathBuf,
     max_players: usize,
     log: log::LevelFilter,
+    /// The settings page's first port to try; None: no page.
     config_page: Option<u16>,
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { port: 30000, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info, config_page: None };
+    let mut o = Options { port: 30000, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info, config_page: Some(8080) };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or(format!("{arg} needs a value"));
@@ -180,6 +183,7 @@ fn options() -> Result<Options, String> {
             "--data" => o.data = value()?.into(),
             "--max-players" => o.max_players = value()?.parse().map_err(|_| "--max-players needs a number")?,
             "--config-page" => o.config_page = Some(value()?.parse().map_err(|_| "--config-page needs a port number")?),
+            "--no-config-page" => o.config_page = None,
             "--log" => o.log = value()?.parse().map_err(|_| "--log needs error, warn, info or debug")?,
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown option {other}")),
@@ -241,21 +245,21 @@ fn run(o: &Options) -> std::io::Result<()> {
         media: content::Media::load(&d("media")),
         status: status::Status::new(address.clone()),
         max_players: o.max_players,
+        // The public server list (announce.rs), if server.txt says so.
+        announcer: announce::Announcer::start(announce::load(&data.join("server.txt")), data.join("server.txt"), o.port),
     };
-    // The public server list (announce.rs): only the settings so far.
-    let list = announce::load(&data.join("server.txt"));
-    if list.enabled {
-        log::info!("Server list: set to announce \"{}\" (the announcing itself is still to come)", list.name);
-    }
     if let Some(port) = o.config_page {
+        // No Wi-Fi of its own here, and only this computer may reach the
+        // page: it has no login.
         let files = config_page::Files {
-            wifi: data.join("wifi.txt"),
+            wifi: None,
             motd: data.join("motd.txt"),
             settings: data.join("world/settings.txt"),
             server: data.join("server.txt"),
-            hotspot_next: data.join("boot-hotspot"),
+            hotspot_next: None,
         };
-        config_page::start(port, files)?;
+        let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        config_page::start(local, port, true, files)?;
     }
     let mut server = server::Server::new(setup);
     // (Board-only: the screen's view of the server, and SD card or flash.)

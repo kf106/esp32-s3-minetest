@@ -289,27 +289,35 @@ fn main() -> anyhow::Result<()> {
     if motd.is_some() {
         info!("Welcome message from {MOUNT}/motd.txt");
     }
-    let mut server = server::Server::new(server::Setup { socket, motd, auth, world, inventories, players, furnaces, chests, items, clock, door_owners, bed_spawns, settings, media, status, max_players: server::MAX_PLAYERS });
+    // The public server list (announce.rs), if server.txt says so; not
+    // from the hotspot, which has no internet.
+    let server_txt = std::path::PathBuf::from(format!("{MOUNT}/server.txt"));
+    let list = announce::load(&server_txt);
+    let announcer = if boot == Boot::Hotspot {
+        if list.enabled {
+            info!("Server list: not announcing from the hotspot (no internet here)");
+        }
+        None
+    } else {
+        announce::Announcer::start(list, server_txt, PORT)
+    };
+    let mut server = server::Server::new(server::Setup { socket, motd, auth, world, inventories, players, furnaces, chests, items, clock, door_owners, bed_spawns, settings, media, status, max_players: server::MAX_PLAYERS, announcer });
     // Guard against the compiler problem that once lost an argument on the
     // way into Server::new (see server::Setup).
     if server.status_data_addr() != sent {
         log::error!("Server was built with a corrupted status pointer; expect a crash");
     }
-    // The public server list (announce.rs): only the settings so far.
-    let list = announce::load(std::path::Path::new(&format!("{MOUNT}/server.txt")));
-    if list.enabled {
-        info!("Server list: set to announce \"{}\" (the announcing itself is still to come)", list.name);
-    }
     // The settings page, on the hotspot only (see config_page.rs).
     if boot == Boot::Hotspot {
         let files = config_page::Files {
-            wifi: WIFI_FILE.into(),
+            wifi: Some(WIFI_FILE.into()),
             motd: format!("{MOUNT}/motd.txt").into(),
             settings: format!("{MOUNT}/world/settings.txt").into(),
             server: format!("{MOUNT}/server.txt").into(),
-            hotspot_next: HOTSPOT_NEXT.into(),
+            hotspot_next: Some(HOTSPOT_NEXT.into()),
         };
-        if let Err(e) = config_page::start(config_page::PORT, files) {
+        let any = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+        if let Err(e) = config_page::start(any, config_page::PORT, false, files) {
             log::warn!("No settings page: {e}");
         }
     }

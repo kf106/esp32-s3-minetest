@@ -25,7 +25,26 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Read the settings, saying in the log which are not the defaults.
     pub fn open(path: impl Into<PathBuf>) -> Self {
+        let s = Self::read(path);
+        if s.creative {
+            info!("Creative mode is on (creative_mode = true in {})", s.path.display());
+        }
+        if !s.fire {
+            info!("Fire spreading is off (enable_fire = false in {})", s.path.display());
+        }
+        if !s.tnt {
+            info!("TNT is off (enable_tnt = false in {})", s.path.display());
+        }
+        if s.mobs {
+            info!("Mobs are on (enable_mobs = true in {})", s.path.display());
+        }
+        s
+    }
+
+    /// Read the settings, quietly (the settings page: config_page.rs).
+    pub fn read(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let text = match storage::read(&path) {
             Ok(text) => String::from_utf8_lossy(&text).into_owned(),
@@ -39,18 +58,6 @@ impl Settings {
         let tnt = flag(&text, "enable_tnt").unwrap_or(true);
         let mobs = flag(&text, "enable_mobs").unwrap_or(false);
         let creative = flag(&text, "creative_mode").unwrap_or(false);
-        if creative {
-            info!("Creative mode is on (creative_mode = true in {})", path.display());
-        }
-        if !fire {
-            info!("Fire spreading is off (enable_fire = false in {})", path.display());
-        }
-        if !tnt {
-            info!("TNT is off (enable_tnt = false in {})", path.display());
-        }
-        if mobs {
-            info!("Mobs are on (enable_mobs = true in {})", path.display());
-        }
         Self { path, fire, tnt, mobs, creative }
     }
 
