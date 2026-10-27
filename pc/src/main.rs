@@ -147,7 +147,8 @@ mod wifi_config;
 const USAGE: &str = "\
 Usage: minetest-server [options]
 
-  --port <n>          UDP port to listen on (default 30000)
+  --port <n>          UDP port to listen on (default: port in the data
+                      folder's server.txt, or 30000)
   --bind <address>    address to listen on (default 0.0.0.0: all)
   --data <folder>     where the world, accounts and players are kept, and
                       the optional media/ folder and motd.txt
@@ -163,7 +164,8 @@ Usage: minetest-server [options]
 ";
 
 struct Options {
-    port: u16,
+    /// The game port, if given; otherwise server.txt's.
+    port: Option<u16>,
     bind: String,
     data: PathBuf,
     max_players: usize,
@@ -173,12 +175,12 @@ struct Options {
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { port: 30000, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info, config_page: Some(8080) };
+    let mut o = Options { port: None, bind: "0.0.0.0".into(), data: "minetest-data".into(), max_players: 15, log: log::LevelFilter::Info, config_page: Some(8080) };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or(format!("{arg} needs a value"));
         match arg.as_str() {
-            "--port" => o.port = value()?.parse().map_err(|_| "--port needs a number from 1 to 65535")?,
+            "--port" => o.port = Some(value()?.parse().ok().filter(|&p| p > 0).ok_or("--port needs a number from 1 to 65535")?),
             "--bind" => o.bind = value()?,
             "--data" => o.data = value()?.into(),
             "--max-players" => o.max_players = value()?.parse().map_err(|_| "--max-players needs a number")?,
@@ -222,7 +224,9 @@ fn run(o: &Options) -> std::io::Result<()> {
     std::fs::create_dir_all(data)?;
     let d = |name: &str| data.join(name).to_string_lossy().into_owned();
     log::info!("Data folder {}", std::fs::canonicalize(data).unwrap_or(data.clone()).display());
-    let address = format!("{}:{}", o.bind, o.port);
+    // The game port: --port, or server.txt's (announce.rs), or 30000.
+    let port = o.port.unwrap_or_else(|| announce::read(&data.join("server.txt")).game_port);
+    let address = format!("{}:{}", o.bind, port);
     let socket = UdpSocket::bind(&address).map_err(|e| std::io::Error::new(e.kind(), format!("listening on {address}: {e}")))?;
     let motd = std::fs::read_to_string(d("motd.txt")).ok();
     if motd.is_some() {
@@ -257,6 +261,7 @@ fn run(o: &Options) -> std::io::Result<()> {
             settings: data.join("world/settings.txt"),
             server: data.join("server.txt"),
             hotspot_next: None,
+            fixed_port: o.port,
         };
         let local = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         config_page::start(local, port, true, files)?;

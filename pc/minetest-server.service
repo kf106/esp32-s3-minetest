@@ -11,7 +11,7 @@ Type=simple
 User=minetest
 Group=minetest
 WorkingDirectory=/var/lib/minetest-server
-ExecStart=/usr/local/bin/minetest-server --data /var/lib/minetest-server --port 30000
+ExecStart=/usr/local/bin/minetest-server --data /var/lib/minetest-server
 Restart=on-failure
 RestartSec=5
 # Log lines go to the journal: journalctl -u minetest-server -f

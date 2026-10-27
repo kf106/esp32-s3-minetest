@@ -213,21 +213,22 @@ def run_pc(program, port):
         server.wait()
 
 
-def run_config(program, port, http_port):
+def run_config(program, port, http_port, new_port):
     """The settings page (config_page.rs) on the PC build: configtest.py
-    saves new settings through it, and the server restarts in place."""
+    saves new settings through it, and the server restarts in place, on
+    new_port (the game port is server.txt's here, not --port's)."""
     data = WORK / "out" / "configdata"
     shutil.rmtree(data, ignore_errors=True)
     data.mkdir(parents=True)
     # The test switches announcing on: to nowhere, never the real list.
-    (data / "server.txt").write_text("serverlist_url = http://127.0.0.1:9\n")
-    server = subprocess.Popen([str(program), "--port", str(port), "--bind", "127.0.0.1", "--data", str(data),
+    (data / "server.txt").write_text(f"port = {port}\nserverlist_url = http://127.0.0.1:9\n")
+    server = subprocess.Popen([str(program), "--bind", "127.0.0.1", "--data", str(data),
                                "--config-page", str(http_port)], stdout=subprocess.DEVNULL, stderr=open(WORK / "out" / "config-server.log", "w"))
     try:
         time.sleep(1.5)
         t = time.time()
         r = subprocess.run([sys.executable, str(NET / "configtest.py"), str(port), str(http_port), str(data), str(server.pid),
-                            str(NET / "netclient.py")], cwd=NET, capture_output=True, text=True, timeout=120)
+                            str(NET / "netclient.py"), str(new_port)], cwd=NET, capture_output=True, text=True, timeout=120)
         out = (r.stdout + r.stderr).strip().splitlines()
         ok = r.returncode == 0 and out and out[-1].endswith("OK")
         print(f"  {'pass' if ok else 'FAIL'}  {'config':<8} {time.time() - t:5.0f} s  {(out or [''])[-1][:90]}", flush=True)
@@ -305,7 +306,7 @@ def main():
             results.append((name, run_network(name, env, args, night, FIRST_PORT + i, binary, plants)))
         if pc is not None:
             results.append(("pc", run_pc(pc, FIRST_PORT - 1)))
-            results.append(("config", run_config(pc, FIRST_PORT - 2, FIRST_PORT - 3)))
+            results.append(("config", run_config(pc, FIRST_PORT - 2, FIRST_PORT - 3, FIRST_PORT - 7)))
             results.append(("announce", run_announce(pc, FIRST_PORT - 4, FIRST_PORT - 5, FIRST_PORT - 6)))
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} of {len(results)} passed" + (f"; failed: {', '.join(failed)}" if failed else ""))

@@ -16,6 +16,7 @@ Format the card as FAT32 and insert it before powering up. Any size will do: a w
 /sd/media/      optional extra media (see below)
 /sd/motd.txt    optional welcome message (see below)
 /sd/wifi.txt    the Wi-Fi networks to join, and the hotspot (see below)
+/sd/server.txt  the game port, and announcing on the public server list (see below)
 ```
 
 All of these are plain text or simple binary files, so you can inspect or edit them on a PC. If a new version changes the terrain generator, the world starts afresh: the old change log is kept as `nodes-v<n>.log`, and the chests', furnaces' and doors' files, bed spawns, signs' text and dropped items as `<file>.v<n>` (`chests.txt.v4`, say). Players keep their inventories; anyone standing inside the new ground is moved up onto it.
@@ -78,7 +79,7 @@ password minetest
 
 If the file has no `hotspot` entry, this default is added to the end of it at start-up (the rest of the file is left as it was). The four characters after "MTG-" are the last four hex digits of the board's hotspot MAC address, so boards near each other have different names; the screen's Join page shows the name. A file that still has the old default (`hotspot Luanti` with the password `LuantiLuanti`) gets the new one in its place; a name or password you set yourself is left alone. WPA2 needs a password of 8 to 63 characters; leave the `password` line out for an open hotspot. If the entry can't be used (a password too short, say), the server warns and runs the default instead.
 
-On the hotspot, the server is at **192.168.4.1** (port 30000, Luanti's default), and hands out addresses to up to 8 devices. The screen opens on the Join page: point a phone's camera at the QR code to join, or type the name and password on a laptop, then connect Luanti to 192.168.4.1 (or open that address in a browser for [the settings page](#the-settings-page)). There is no internet on the hotspot, so a phone may complain or drift back to mobile data; tell it to stay connected. The power saving described above is off on the hotspot, since the board is the access point.
+On the hotspot, the server is at **192.168.4.1** (port 30000, Luanti's default, unless [set otherwise](#the-game-port)), and hands out addresses to up to 8 devices. The screen opens on the Join page: point a phone's camera at the QR code to join, or type the name and password on a laptop, then connect Luanti to 192.168.4.1 (or open that address in a browser for [the settings page](#the-settings-page)). There is no internet on the hotspot, so a phone may complain or drift back to mobile data; tell it to stay connected. The power saving described above is off on the hotspot, since the board is the access point.
 
 The passwords are stored on the card in plain text, so treat the card accordingly.
 
@@ -88,6 +89,7 @@ On the hotspot, the board also serves a settings page: join the hotspot with a p
 
 - **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
 - **Welcome message:** `motd.txt`. Empty means the built-in welcome.
+- **Game port:** the UDP port players connect to (`server.txt`, see [below](#the-game-port)).
 - **Public server list:** a name, a description and, optionally, a website, a domain name and the port players use from outside (`server.txt`, see [below](#the-public-server-list)). The switch to announce the server stays greyed out until the details are complete and would pass the list's own checks.
 - **Require passwords:** new players must choose a password (Luanti's `disallow_empty_password`, kept in `world/settings.txt`). Without it, an account made with an empty password can be used by anyone who types that name. Switching announcing on turns it on as well, and you can turn it off again. Accounts already made with an empty password keep working; the administrator can give them one with `/setpassword <name> <password>`.
 - **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
@@ -105,11 +107,22 @@ Things to know:
 - **The PC build has it too,** without the Wi-Fi and hotspot sections, on its own computer only: see [docs/pc.md](pc.md#the-settings-page).
 - **`wifi.txt` is rewritten:** saving writes it out afresh, so comments of your own in it are replaced by the standard ones.
 
+## The game port
+
+The server listens for players on UDP port **30000**, Luanti's usual one, which the Luanti client fills in for you. To use another, set it on [the settings page](#the-settings-page), or put it in `/sd/server.txt`:
+
+```
+port = 30001
+```
+
+It takes effect when the board restarts. The board's screen shows the address with the port, and players type that port in Join Game after the address. If your router forwards a port to the board (for the [public server list](#the-public-server-list)), the forwarding must point at the new port too. (The settings page stays on port 80: it is a web page, over TCP.)
+
 ## The public server list
 
 The server can be listed on Luanti's public server list, where anyone finds it in the Join Game tab. The settings are in `/sd/server.txt`, set on [the settings page](#the-settings-page) or by hand, in Luanti's own "name = value" style:
 
 ```
+port = 30000
 server_announce = true
 server_name = Minetest on a Stick
 server_description = A small world on an ESP32. Be nice.
@@ -119,15 +132,16 @@ server_announce_port =
 server_announce_send_players = true
 ```
 
+- `port`: the game port (see [above](#the-game-port)).
 - `server_announce`: whether to announce. It only takes effect when the name and description are filled in and everything passes the list's checks; otherwise the server says why in its log and doesn't announce.
 - `server_name`, `server_description`: what the list shows (one line each, up to 80 and 400 characters).
 - `server_url`: optional, a web page about the server, starting `http://` or `https://`.
 - `server_address`: optional, a domain name that points at your home connection. Leave it empty and the list uses the address the announcement comes from, which is right for most homes. No port and no `http://`. A private address (192.168.x.x and the like) is refused, since nobody outside could use it.
-- `server_announce_port`: optional, the port players use from outside, if your router forwards a different one to the board's 30000.
+- `server_announce_port`: optional, the port players use from outside, if your router forwards a different one to the board's game port. Left empty, the list is given the game port.
 - `server_announce_send_players`: whether the list shows the names of the players online, or only how many there are.
 - `serverlist_url`: not on the page; only for announcing to a list of your own (the default is `https://servers.luanti.org`).
 
-For players outside your home to join, your router must forward **UDP** port 30000 to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account, so turn on **Require passwords** on the settings page (it comes on with announcing); the list then shows the server as needing a password.
+For players outside your home to join, your router must forward **UDP** port 30000 (or [the game port](#the-game-port), if you changed it) to the board, and your connection needs its own public address: most mobile connections, and some home ones, share one between many customers ("carrier-grade NAT"), and then nothing outside can reach the board. Once listed, anyone can join and make an account, so turn on **Require passwords** on the settings page (it comes on with announcing); the list then shows the server as needing a password.
 
 How it works, as a Luanti server does it:
 
@@ -151,7 +165,7 @@ To add a skin, put `skin_<name>.png` in `/sd/media` and restart. It appears in t
 ## Connecting
 
 1. Watch the serial monitor or the LCD for the board's IP address.
-2. In Luanti, open **Join Game** and enter that address with port **30000**.
+2. In Luanti, open **Join Game** and enter that address with port **30000** (or [the game port](#the-game-port), if you changed it: the screen shows it after the address).
 3. Pick a name and password; the first login creates the account.
 
 The first player to log in to a new world becomes its administrator, so log in yourself before anyone else does.

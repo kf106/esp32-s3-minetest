@@ -1,12 +1,13 @@
-//! Announcing the server on the public server list (servers.luanti.org),
-//! as a Luanti server with `server_announce = true` does, so players find
-//! it in the client's Join Game tab.
+//! The game port, and announcing the server on the public server list
+//! (servers.luanti.org), as a Luanti server with `server_announce = true`
+//! does, so players find it in the client's Join Game tab.
 //!
 //! The settings are kept in `server.txt` on the SD card (or flash), in
 //! Luanti's "name = value" style with Luanti's names where it has them,
 //! changed on the settings page (config_page.rs) or by hand:
 //!
 //! ```text
+//! port = 30000
 //! server_announce = false
 //! server_name = Minetest on a Stick
 //! server_description = A small world on an ESP32. Be nice.
@@ -17,14 +18,16 @@
 //! serverlist_url = https://servers.luanti.org
 //! ```
 //!
+//! - `port`: the UDP port the game listens on (Luanti's; default 30000,
+//!   Luanti's too). The PC build's `--port` overrides it.
 //! - `server_name` and `server_description`: required to announce.
 //! - `server_url`: optional, a web page about the server (http or https).
 //! - `server_address`: optional, a domain name players connect to. Left
 //!   out, the list uses the address the announcement came from, which is
 //!   right for most homes. No port, no "http://".
 //! - `server_announce_port` (ours): the port players connect to from
-//!   outside, if the router forwards a different one to the board's
-//!   30000. Luanti always announces the port it listens on.
+//!   outside, if the router forwards a different one to the game port.
+//!   Luanti always announces the port it listens on.
 //! - `server_announce_send_players`: whether the list shows the players'
 //!   names, or only how many there are (Luanti's, default true).
 //! - `serverlist_url`: Luanti's, for a list of your own; rarely changed.
@@ -59,6 +62,8 @@ use log::{info, warn};
 use crate::storage;
 
 pub const DEFAULT_LIST_URL: &str = "https://servers.luanti.org";
+/// The game port when server.txt doesn't say: Luanti's.
+pub const DEFAULT_PORT: u16 = 30000;
 pub const MAX_NAME: usize = 80;
 pub const MAX_DESCRIPTION: usize = 400;
 pub const MAX_URL: usize = 200;
@@ -66,6 +71,8 @@ const MAX_ADDRESS: usize = 255;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Announce {
+    /// The game port (`port`).
+    pub game_port: u16,
     /// Whether to announce (the switch).
     pub enabled: bool,
     pub name: String,
@@ -83,6 +90,7 @@ pub struct Announce {
 impl Default for Announce {
     fn default() -> Self {
         Announce {
+            game_port: DEFAULT_PORT,
             enabled: false,
             name: String::new(),
             description: String::new(),
@@ -113,6 +121,16 @@ pub fn parse(text: &str) -> Announce {
         };
         let v = v.trim().to_string();
         match k.trim() {
+            "port" => {
+                a.game_port = match v.parse::<u16>() {
+                    Ok(p) if p > 0 => p,
+                    _ if v.is_empty() => DEFAULT_PORT,
+                    _ => {
+                        warn!("server.txt line {}: port must be 1 to 65535; using {DEFAULT_PORT}", n + 1);
+                        DEFAULT_PORT
+                    }
+                }
+            }
             "server_announce" => a.enabled = flag(&v),
             "server_name" => a.name = v,
             "server_description" => a.description = v,
@@ -137,22 +155,32 @@ pub fn parse(text: &str) -> Announce {
 }
 
 const HEADER: &str = "\
-# Announcing this server on the public server list (servers.luanti.org),
-# where Luanti's Join Game tab finds it. Change it on the settings page
-# (the board's hotspot, then http://192.168.4.1) or here.
-#
-# To be listed, the server must be reachable from the internet: forward
-# UDP port 30000 on your router to the board. Anyone can then join and
-# make an account.
+# The server's game port, and announcing it on the public server list
+# (servers.luanti.org), where Luanti's Join Game tab finds it. Change it on
+# the settings page (the board's hotspot, then http://192.168.4.1) or here.
+";
+
+const PORT_NOTE: &str = "
+# The UDP port players connect to (Luanti's usual one is 30000, which
+# Luanti fills in for you).
+";
+
+const LIST_NOTE: &str = "
+# The public server list. To be listed, the server must be reachable from
+# the internet: forward the game port (UDP) on your router to the board.
+# Anyone can then join and make an account.
 ";
 
 /// The file's text.
 pub fn format(a: &Announce) -> String {
     let mut t = String::from(HEADER);
-    t.push_str(&format!("\nserver_announce = {}\n", a.enabled));
+    t.push_str(PORT_NOTE);
+    t.push_str(&format!("port = {}\n", a.game_port));
+    t.push_str(LIST_NOTE);
+    t.push_str(&format!("server_announce = {}\n", a.enabled));
     t.push_str(&format!("server_name = {}\n", a.name));
     t.push_str(&format!("server_description = {}\n", a.description));
-    t.push_str("\n# Optional: a web page, a domain name, and the port players use from\n# outside if not the board's own (30000).\n");
+    t.push_str("\n# Optional: a web page, a domain name, and the port players use from\n# outside if your router forwards a different one to the game port.\n");
     t.push_str(&format!("server_url = {}\n", a.url));
     t.push_str(&format!("server_address = {}\n", a.address));
     t.push_str(&format!("server_announce_port = {}\n", a.port.map(|p| p.to_string()).unwrap_or_default()));
@@ -605,7 +633,10 @@ fn run(a: Announce, port: u16, jobs: Receiver<Job>, outcomes: Sender<Outcome>) {
 pub struct Announcer {
     settings: Announce,
     path: PathBuf,
+    /// The port announced.
     port: u16,
+    /// The game port, if not server.txt's (the PC build's --port).
+    fixed_port: Option<u16>,
     jobs: Sender<Job>,
     outcomes: Receiver<Outcome>,
     born: Instant,
@@ -625,13 +656,13 @@ pub struct Tick {
 
 impl Announcer {
     /// Start announcing with these settings (from `path`, server.txt), if
-    /// they say to; `listen_port` is the server's own port. None: not
-    /// announcing (the reason is in the log).
-    pub fn start(settings: Announce, path: PathBuf, listen_port: u16) -> Option<Self> {
+    /// they say to; `fixed_port` is the game port if not theirs (the PC
+    /// build's --port). None: not announcing (the reason is in the log).
+    pub fn start(settings: Announce, path: PathBuf, fixed_port: Option<u16>) -> Option<Self> {
         if !settings.enabled {
             return None;
         }
-        let port = settings.port.unwrap_or(listen_port);
+        let port = settings.port.unwrap_or(fixed_port.unwrap_or(settings.game_port));
         let (jobs, job_rx) = mpsc::channel();
         let (outcome_tx, outcomes) = mpsc::channel();
         let a = settings.clone();
@@ -641,7 +672,7 @@ impl Announcer {
         }
         info!("Server list: announcing \"{}\" on port {port} to {} every {} s", settings.name, settings.list_url, EVERY.as_secs());
         let now = Instant::now();
-        Some(Announcer { settings, path, port, jobs, outcomes, born: now, next: now + FIRST_AFTER, busy: false })
+        Some(Announcer { settings, path, port, fixed_port, jobs, outcomes, born: now, next: now + FIRST_AFTER, busy: false })
     }
 
     /// Called from the server loop: announce when it's time, with what
@@ -669,7 +700,7 @@ impl Announcer {
     /// for the list to time out. Waits a few seconds at most.
     pub fn withdraw_if_changed(&self) {
         let new = load(&self.path);
-        let same = new.enabled && new.port.unwrap_or(self.port) == self.port && new.address == self.settings.address && new.list_url == self.settings.list_url;
+        let same = new.enabled && new.port.unwrap_or(self.fixed_port.unwrap_or(new.game_port)) == self.port && new.address == self.settings.address && new.list_url == self.settings.list_url;
         if same {
             return;
         }
@@ -698,6 +729,7 @@ mod tests {
             url: "https://example.org/x".into(),
             address: "mc.example.org".into(),
             port: Some(30001),
+            game_port: 30005,
             send_players: false,
             list_url: DEFAULT_LIST_URL.into(),
         };

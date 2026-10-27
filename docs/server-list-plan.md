@@ -178,6 +178,8 @@ ESP-IDF v5.5.1 `components/mbedtls/Kconfig`.
 edited on the hotspot's settings page or by hand; see docs/setup.md, "The
 public server list". Luanti's names where it has them:
 
+- `port` (Luanti's; default 30000): the game port, added later; the PC
+  build's `--port` overrides it
 - `server_announce` (default false)
 - `server_name`, `server_description` (required; one line, up to 80 and
   400 characters)

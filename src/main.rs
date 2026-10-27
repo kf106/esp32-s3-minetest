@@ -86,7 +86,6 @@ const HOTSPOT_NEXT: &str = "/sd/boot-hotspot";
 const WIFI_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 /// How often to check that the Wi-Fi connection is still there.
 const WIFI_CHECK: std::time::Duration = std::time::Duration::from_secs(2);
-const PORT: u16 = 30000;
 /// The BOOT button: GPIO 0, pulled up, low while pressed.
 const PIN_BOOT: i32 = 0;
 /// How long after start-up the BOOT button is watched, and how long it
@@ -203,6 +202,13 @@ fn main() -> anyhow::Result<()> {
         ssid: ssid.to_string(),
         password: option_env!("WIFI_PASS").unwrap_or("").to_string(),
     });
+    // The game port, from server.txt (announce.rs): Luanti's 30000 unless
+    // it says otherwise.
+    let server_txt = std::path::PathBuf::from(format!("{MOUNT}/server.txt"));
+    let port = announce::read(&server_txt).game_port;
+    if port != announce::DEFAULT_PORT {
+        info!("Game port {port} (port in {})", server_txt.display());
+    }
     let config = wifi_config::load(&wifi_config::Files { networks: WIFI_FILE, written: WIFI_WRITTEN }, built_in, &board_id());
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take()?;
@@ -224,7 +230,7 @@ fn main() -> anyhow::Result<()> {
     let _sd = sd;
     let ip = if boot == Boot::Hotspot {
         let driver = WifiDriver::new(p.modem, sysloop.clone(), Some(nvs))?;
-        let wifi = start_hotspot(driver, sysloop, &config.hotspot, &status)?;
+        let wifi = start_hotspot(driver, sysloop, &config.hotspot, &status, port)?;
         let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
         _hotspot_wifi = Some(wifi);
         ip
@@ -246,7 +252,7 @@ fn main() -> anyhow::Result<()> {
         info!("Connected to {joined}, IP address {ip}");
         {
             let mut st = status::lock(&status);
-            st.address = format!("{ip}:{PORT}");
+            st.address = format!("{ip}:{port}");
             st.event(format!("Joined Wi-Fi {joined}"));
         }
         // Power saving makes the radio doze between beacons, which delays and
@@ -263,7 +269,7 @@ fn main() -> anyhow::Result<()> {
             .stack_size(8 * 1024)
             .spawn({
                 let status = status.clone();
-                move || watch_wifi(wifi, &networks, &status, joined)
+                move || watch_wifi(wifi, &networks, &status, joined, port)
             })?;
         ip
     };
@@ -282,7 +288,7 @@ fn main() -> anyhow::Result<()> {
     let bed_spawns = beds::Spawns::open(format!("{MOUNT}/world/beds_spawns"));
     let settings = settings::Settings::open(format!("{MOUNT}/world/settings.txt"));
     let media = content::Media::load(&format!("{MOUNT}/media"));
-    let socket = UdpSocket::bind(("0.0.0.0", PORT))?;
+    let socket = UdpSocket::bind(("0.0.0.0", port))?;
     let sent = std::sync::Arc::as_ptr(&status) as usize;
     // An optional welcome message of your own, one chat line per line.
     let motd = fs::read_to_string(format!("{MOUNT}/motd.txt")).ok();
@@ -291,7 +297,6 @@ fn main() -> anyhow::Result<()> {
     }
     // The public server list (announce.rs), if server.txt says so; not
     // from the hotspot, which has no internet.
-    let server_txt = std::path::PathBuf::from(format!("{MOUNT}/server.txt"));
     let list = announce::load(&server_txt);
     let announcer = if boot == Boot::Hotspot {
         if list.enabled {
@@ -299,7 +304,7 @@ fn main() -> anyhow::Result<()> {
         }
         None
     } else {
-        announce::Announcer::start(list, server_txt, PORT)
+        announce::Announcer::start(list, server_txt, None)
     };
     let mut server = server::Server::new(server::Setup { socket, motd, auth, world, inventories, players, furnaces, chests, items, clock, door_owners, bed_spawns, settings, media, status, max_players: server::MAX_PLAYERS, announcer });
     // Guard against the compiler problem that once lost an argument on the
@@ -315,6 +320,7 @@ fn main() -> anyhow::Result<()> {
             settings: format!("{MOUNT}/world/settings.txt").into(),
             server: format!("{MOUNT}/server.txt").into(),
             hotspot_next: Some(HOTSPOT_NEXT.into()),
+            fixed_port: None,
         };
         let any = std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
         if let Err(e) = config_page::start(any, config_page::PORT, false, files) {
@@ -322,7 +328,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     log_heap("server ready");
-    info!("Luanti server listening on {ip}:{PORT}");
+    info!("Luanti server listening on {ip}:{port}");
     server.run()?;
 
     Ok(())
@@ -638,6 +644,7 @@ fn start_hotspot(
     sysloop: EspSystemEventLoop,
     net: &wifi_config::Network,
     status: &status::SharedStatus,
+    port: u16,
 ) -> anyhow::Result<BlockingWifi<EspWifi<'static>>> {
     use esp_idf_svc::ipv4::{self, Mask, RouterConfiguration, Subnet};
     use esp_idf_svc::netif::{EspNetif, NetifConfiguration, NetifStack};
@@ -668,13 +675,13 @@ fn start_hotspot(
     wifi.start()?;
     wifi.wait_netif_up()?;
     let ip = wifi.wifi().ap_netif().get_ip_info()?.ip;
-    info!("Hotspot \"{}\" up, server at {ip}:{PORT}", net.ssid);
+    info!("Hotspot \"{}\" up, server at {ip}:{port}", net.ssid);
     let qr = wifi_config::join_qr(net);
     if qr.is_none() {
         log::warn!("The hotspot's details don't fit in a QR code");
     }
     let mut st = status::lock(status);
-    st.address = format!("{ip}:{PORT}");
+    st.address = format!("{ip}:{port}");
     st.event(format!("Hotspot {} up", net.ssid));
     st.hotspot = Some(std::sync::Arc::new(status::Hotspot {
         ssid: net.ssid.clone(),
@@ -762,7 +769,7 @@ fn join_wifi(wifi: &mut BlockingWifi<EspWifi<'static>>, networks: &[wifi_config:
 /// Keep the Wi-Fi connection: check it every WIFI_CHECK, and when it has
 /// gone, try the same network again (most drop-outs are short), then the
 /// known networks as at startup, until one works.
-fn watch_wifi(mut wifi: BlockingWifi<EspWifi<'static>>, networks: &[wifi_config::Network], status: &status::SharedStatus, mut joined: String) {
+fn watch_wifi(mut wifi: BlockingWifi<EspWifi<'static>>, networks: &[wifi_config::Network], status: &status::SharedStatus, mut joined: String, port: u16) {
     loop {
         std::thread::sleep(WIFI_CHECK);
         if wifi.is_up().unwrap_or(false) {
@@ -787,7 +794,7 @@ fn watch_wifi(mut wifi: BlockingWifi<EspWifi<'static>>, networks: &[wifi_config:
             Ok(info) => {
                 info!("Back on Wi-Fi {joined}, IP address {}", info.ip);
                 let mut st = status::lock(status);
-                st.address = format!("{}:{PORT}", info.ip);
+                st.address = format!("{}:{port}", info.ip);
                 st.event(format!("Rejoined Wi-Fi {joined}"));
             }
             Err(e) => log::warn!("Rejoined {joined}, but no IP address: {e}"),

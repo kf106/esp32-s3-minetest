@@ -69,11 +69,14 @@ pub struct Files {
     pub wifi: Option<PathBuf>,
     pub motd: PathBuf,
     pub settings: PathBuf,
-    /// Announcing on the server list (announce.rs).
+    /// The game port and announcing on the server list (announce.rs).
     pub server: PathBuf,
     /// Written to restart on the hotspot (see `take_hotspot_marker`); None
     /// in the PC build.
     pub hotspot_next: Option<PathBuf>,
+    /// The game port, when not server.txt's to set (the PC build's
+    /// --port): the page shows it but can't change it.
+    pub fixed_port: Option<u16>,
 }
 
 impl Files {
@@ -361,6 +364,8 @@ struct Current {
     no_empty_passwords: bool,
     motd: String,
     announce: Announce,
+    /// Files::fixed_port.
+    fixed_port: Option<u16>,
 }
 
 impl Current {
@@ -379,6 +384,7 @@ impl Current {
             no_empty_passwords: settings.no_empty_passwords(),
             motd: std::fs::read_to_string(&files.motd).unwrap_or_default(),
             announce: announce::read(&files.server),
+            fixed_port: files.fixed_port,
         }
     }
 }
@@ -395,6 +401,7 @@ struct New {
     motd: String,
     announce: Announce,
     restart_on_hotspot: bool,
+    fixed_port: Option<u16>,
 }
 
 impl New {
@@ -410,6 +417,7 @@ impl New {
             no_empty_passwords: self.no_empty_passwords,
             motd: self.motd.clone(),
             announce: self.announce.clone(),
+            fixed_port: self.fixed_port,
         }
     }
 }
@@ -478,6 +486,30 @@ fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<N
     // The server list. One-line fields: control characters (a line break
     // from a hand-made request) would break the file.
     let line = |name: &str| get(name).unwrap_or("").chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>().trim().to_string();
+
+    // The game port, unless --port sets it (the PC build).
+    let game_port = match current.fixed_port {
+        Some(_) => current.announce.game_port,
+        None => {
+            let text = line("port");
+            match text.parse::<u16>() {
+                _ if text.is_empty() => announce::DEFAULT_PORT,
+                Ok(p) if p > 0 => p,
+                _ => {
+                    problem.get_or_insert("The game port must be a number from 1 to 65535.".to_string());
+                    current.announce.game_port
+                }
+            }
+        }
+    };
+    // On a PC, another program may have the port (the board has it to
+    // itself): say so now, rather than fail to restart.
+    if !board && game_port != current.announce.game_port {
+        if let Err(e) = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, game_port)) {
+            problem.get_or_insert(format!("Port {game_port} can't be used on this computer: {e}."));
+        }
+    }
+
     let port_text = line("ann_port");
     let port = match port_text.parse::<u16>() {
         _ if port_text.is_empty() => None,
@@ -488,6 +520,7 @@ fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<N
         }
     };
     let announce = Announce {
+        game_port,
         enabled: on("ann_on"),
         name: line("ann_name"),
         description: line("ann_desc"),
@@ -519,6 +552,7 @@ fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<N
         motd,
         announce,
         restart_on_hotspot,
+        fixed_port: current.fixed_port,
     };
     match problem {
         None => Ok(new),
@@ -770,6 +804,9 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
 <section><h2><img src="/t/default_sign_wood.png" alt="">Welcome message</h2>
 <textarea name="motd" maxlength="{MAX_MOTD}" placeholder="Leave empty for the built-in welcome.">{motd}</textarea>
 <p class="note">Each line is one line in the chat when a player joins. The list of players online is added after it.</p></section>
+<section><h2><img src="/t/doors_item_steel.png" alt="">Game port</h2>
+<div class="two"><div><label class="field" for="port">Port (UDP)</label><input type="text" id="port" name="port" value="{game_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="{default_port}"{port_dis}></div></div>
+<p class="note">{port_note}</p></section>
 <section><h2><img src="/t/map_mapping_kit.png" alt="">Public server list</h2>
 <label class="toggle wide"><input type="checkbox" id="ann_on" name="ann_on"{ann_on}{ann_dis}><img src="/t/map_mapping_kit.png" alt=""><span><b>Announce this server</b><small>List it in Luanti's Join Game tab, for anyone to find.</small></span><span class="state"></span></label>
 <p class="hint" id="ann_hint">{ann_hint}</p>
@@ -778,9 +815,9 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
 <label class="field" for="ann_desc">Description</label><input type="text" id="ann_desc" name="ann_desc" value="{ann_desc}" maxlength="{max_desc}" autocomplete="off" placeholder="What players will find, and any rules">
 <label class="field" for="ann_url">Website (optional)</label><input type="text" id="ann_url" name="ann_url" value="{ann_url}" maxlength="{max_url}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://...">
 <div class="two"><div><label class="field" for="ann_addr">Domain name (optional)</label><input type="text" id="ann_addr" name="ann_addr" value="{ann_addr}" maxlength="255" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="your public address"></div>
-<div><label class="field" for="ann_port">Port players use (optional)</label><input type="text" id="ann_port" name="ann_port" value="{ann_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="30000"></div></div>
+<div><label class="field" for="ann_port">Port players use (optional)</label><input type="text" id="ann_port" name="ann_port" value="{ann_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="{game_port}"></div></div>
 <label class="field"><input type="checkbox" name="ann_players"{ann_players}> Show the names of the players online</label>
-<p class="note">For players outside your home to join, your router must forward UDP port 30000 to {machine} (and your internet connection must have its own public address: most mobile ones don't). Once listed, anyone can join and make an account. Leave the domain name empty unless you have one pointing at your home; the port too, unless your router forwards a different one.</p></section>
+<p class="note">For players outside your home to join, your router must forward UDP port {game_port} to {machine} (and your internet connection must have its own public address: most mobile ones don't). Once listed, anyone can join and make an account. Leave the domain name empty unless you have one pointing at your home; the port too, unless your router forwards a different one.</p></section>
 {wifi}</main>
 <div class="bar"><div>{buttons}</div></div>
 </form>
@@ -791,6 +828,13 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
         mobs = toggle("mobs", "mobs_hexer_orb.png", "Mobs", "Hostile mobs spawn", c.mobs),
         creative = toggle("creative", "stair_birch_inner.png", "Creative", "Unlimited blocks", c.creative),
         motd = esc(&c.motd),
+        game_port = c.announce.game_port,
+        default_port = announce::DEFAULT_PORT,
+        port_dis = if c.fixed_port.is_some() { " disabled" } else { "" },
+        port_note = match c.fixed_port {
+            Some(p) => format!("Set to {p} by <code>--port</code> when the server was started, which takes the place of this setting."),
+            None => format!("The port players connect to. Luanti fills in {}, its usual one; with another, players type it in Join Game after the address. Port forwarding on your router must follow it.", announce::DEFAULT_PORT),
+        },
         nopw = if c.no_empty_passwords { " checked" } else { "" },
         ann_on = if c.announce.enabled && announce::check(&c.announce).is_ok() { " checked" } else { "" },
         ann_dis = if announce::check(&c.announce).is_err() { " disabled" } else { "" },
@@ -906,7 +950,28 @@ mod tests {
             no_empty_passwords: false,
             motd: String::new(),
             announce: Announce::default(),
+            fixed_port: None,
         }
+    }
+
+    #[test]
+    fn game_port() {
+        let c = current();
+        let with = |port: &str| form(&[("ssid0", "Home"), ("hs_ssid", "Den"), ("hs_pass", "drawbridge"), ("restart", "wifi"), ("port", port)]);
+        assert_eq!(settle(&with("30001"), &c, true).ok().unwrap().announce.game_port, 30001);
+        assert_eq!(settle(&with(""), &c, true).ok().unwrap().announce.game_port, 30000);
+        for bad in ["0", "65536", "abc", "-1"] {
+            assert!(settle(&with(bad), &c, true).err().unwrap().1.contains("game port"), "{bad}");
+        }
+        // Set by --port: shown, not changed.
+        let fixed = Current { fixed_port: Some(30002), ..current() };
+        assert_eq!(settle(&with("30009"), &fixed, true).ok().unwrap().announce.game_port, 30000);
+        let html = page(&fixed, None, false);
+        assert!(html.contains(r#"name="port" value="30000" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="30000" disabled>"#));
+        assert!(html.contains("Set to 30002 by <code>--port</code>"));
+        let c = Current { announce: Announce { game_port: 30005, ..Announce::default() }, ..current() };
+        let html = page(&c, None, true);
+        assert!(html.contains(r#"name="port" value="30005""#) && html.contains("forward UDP port 30005 to"), "the page uses the game port");
     }
 
     fn form(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1011,6 +1076,7 @@ mod tests {
             settings: dir.join("world/settings.txt"),
             server: dir.join("server.txt"),
             hotspot_next: Some(dir.join("boot-hotspot")),
+            fixed_port: None,
         };
         let new = New {
             networks: vec![net("Home", "secret123")],
@@ -1021,8 +1087,9 @@ mod tests {
             creative: false,
             no_empty_passwords: true,
             motd: "Welcome!\n".into(),
-            announce: Announce { enabled: true, name: "Stick".into(), description: "Small".into(), ..Announce::default() },
+            announce: Announce { enabled: true, name: "Stick".into(), description: "Small".into(), game_port: 30004, ..Announce::default() },
             restart_on_hotspot: true,
+            fixed_port: None,
         };
         save(&new, &files).unwrap();
         let parsed = wifi_config::parse(&std::fs::read_to_string(files.wifi.as_ref().unwrap()).unwrap());
