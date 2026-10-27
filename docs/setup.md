@@ -121,6 +121,10 @@ It takes effect when the board restarts. The board's screen shows the address wi
 
 The server can be listed on Luanti's public server list, where anyone finds it in the Join Game tab. The settings are in `/sd/server.txt`, set on [the settings page](#the-settings-page) or by hand, in Luanti's own "name = value" style:
 
+<p align="center">
+  <img src="../assets/settings-server-list.png" width="480" alt="The settings page's Public server list section: the Announce this server and Require passwords switches, both on, the server's name and description, the optional website, domain name and port, and a box to show the names of the players online">
+</p>
+
 ```
 port = 30000
 server_announce = true
