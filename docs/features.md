@@ -12,6 +12,7 @@ Contents: [The server](#the-server), [The world](#the-world), [Trees, plants and
 - **Accounts:** SRP-6a password login, the same scheme the real server uses. New players register on first connect, and passwords are never stored or sent.
 - **Up to six players at once:** a seventh is turned away with Luanti's "too many users" message. The limit is `MAX_PLAYERS` in `src/server.rs`; more players would overload the ESP32, mainly in generating map blocks when several explore at once.
 - **Welcome message:** joining players are told what the server is and who else is on.
+- **Join and leave lines:** as in Luanti, everyone sees "\*\*\* Name joined the game." when a player joins, and "\*\*\* Name left the game." (or "left the game (timed out).") when one leaves. Not during a restart for new settings, when everyone is let go at once.
 - **Chat:** with Luanti's usual limits (500 characters, 8 messages per 10 seconds, commands included), and Luanti's chat commands: see [Administrator and privileges](admin.md).
 - **Changing your password:** from the client's own Change Password dialogue.
 - **World storage:** the world is generated on demand from a fixed seed. Only the changes players make are stored, as an append-only log on the SD card. Writing to the card is slow, so changes are appended once a second, and an inventory is saved within 5 s of changing (and when its player leaves): a power cut loses at most that much. Saving after every dig once held the server up so much that a player digging fast was disconnected.

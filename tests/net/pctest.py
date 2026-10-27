@@ -20,6 +20,13 @@ c = Client("Tester", port); c.login(); c.playerpos()
 l = heard(c, "Nobody else")
 print("\n".join(l))
 assert l[0].startswith("Welcome!") and "PC build" in l[0] and "Up to 3 players" in l[1]
+# Luanti's join and leave lines, to everyone.
+assert any(x == "*** Tester joined the game." for x in l + heard(c, "joined the game")), "no join line"
+d = Client("Visitor", port); d.login(); d.playerpos()
+assert any(x == "*** Visitor joined the game." for x in heard(c, "Visitor joined")), "the others weren't told of a join"
+d.raw(0, b"\x00\x03")  # DISCO
+assert any(x == "*** Visitor left the game." for x in heard(c, "Visitor left")), "the others weren't told of a leave"
+print("join and leave lines heard")
 # Map blocks arrive.
 blocks = 0; end = time.time() + 20
 while time.time() < end and blocks < 50:

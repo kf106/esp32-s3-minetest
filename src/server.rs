@@ -792,6 +792,9 @@ pub struct Server {
     /// Announcing on the public server list, if server.txt says to
     /// (announce.rs).
     announcer: Option<crate::announce::Announcer>,
+    /// Letting everyone go for a restart (restart_for_settings): no
+    /// "left the game" for each.
+    restarting: bool,
     /// Sending is held back until then (see CONGESTION_BACKOFF).
     congested_until: Instant,
     /// Sends that failed since the last report, and when that was.
@@ -1223,6 +1226,7 @@ impl Server {
             skins,
             max_players,
             announcer,
+            restarting: false,
             welcome: motd
                 .unwrap_or_else(|| welcome(max_players))
                 .lines()
@@ -1936,6 +1940,11 @@ impl Server {
             self.remove_player_object(peer.id);
             self.event(format!("{} {event}", peer.display_name()));
             status::lock(&self.status).leaves += 1;
+            // Luanti's leave message (core.send_leave_message), to those
+            // still here; not while everyone is being let go for a restart.
+            if !self.restarting {
+                self.tell_all(&format!("*** {} left the game.", peer.display_name()));
+            }
         }
         self.close_unwatched_lids();
         self.refresh_players();
@@ -1947,6 +1956,7 @@ impl Server {
     /// the same program, with the same arguments, in the same process.
     fn restart_for_settings(&mut self) -> ! {
         info!("Restarting for the new settings");
+        self.restarting = true;
         let notice = build_access_denied(AccessDenied::Shutdown, "The server is restarting with new settings.", true);
         let addrs: Vec<SocketAddr> = self.peers.keys().copied().collect();
         for &addr in &addrs {
@@ -2145,6 +2155,9 @@ impl Server {
             let name = peer.display_name().to_string();
             self.event(format!("{name} joined"));
             status::lock(&self.status).joins += 1;
+            // Luanti's own join message, to everyone (the newcomer too):
+            // builtin/game/misc.lua's core.send_join_message.
+            self.tell_all(&format!("*** {name} joined the game."));
         }
         self.refresh_players();
     }
@@ -8094,6 +8107,7 @@ impl Server {
             self.remove_player_object(id);
             self.event(format!("{name} timed out"));
             status::lock(&self.status).leaves += 1;
+            self.tell_all(&format!("*** {name} left the game (timed out)."));
         }
         if self.peers.len() != before {
             self.close_unwatched_lids();

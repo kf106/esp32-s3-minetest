@@ -192,10 +192,11 @@ def chat(c):
     return c[o:o + 2 * n].decode("utf-16-be")
 lines = []
 end = time.time() + 5
-while time.time() < end and not any("playing" in l for l in lines):
+while time.time() < end and not any("joined the game" in l for l in lines):
     a.pump(0.05); lines += [chat(c) for c in a.take(0x2F)]
 print("welcome:"); [print("   ", l) for l in lines]
-assert lines[0].startswith("Welcome!") and "kf106" in lines[2] and lines[-1].startswith("Nobody else")
+assert lines[0].startswith("Welcome!") and "kf106" in lines[2] and lines[-2].startswith("Nobody else")
+assert lines[-1] == "*** Tester joined the game.", lines[-1]  # Luanti's join line, after the welcome
 a.playerpos(pitch=0, yaw=90)
 end = time.time() + 20
 while time.time() < end and a.blocks < 150:
