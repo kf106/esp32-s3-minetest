@@ -60,6 +60,8 @@ mod farming;
 mod fasthash;
 #[path = "../../src/fences.rs"]
 mod fences;
+#[path = "../../src/filelog.rs"]
+mod filelog;
 #[path = "../../src/furnace.rs"]
 mod furnace;
 #[path = "../../src/creative.rs"]
@@ -224,8 +226,14 @@ fn run(o: &Options) -> std::io::Result<()> {
     std::fs::create_dir_all(data)?;
     let d = |name: &str| data.join(name).to_string_lossy().into_owned();
     log::info!("Data folder {}", std::fs::canonicalize(data).unwrap_or(data.clone()).display());
-    // The game port: --port, or server.txt's (announce.rs), or 30000.
-    let port = o.port.unwrap_or_else(|| announce::read(&data.join("server.txt")).game_port);
+    // server.txt (announce.rs): the game port, unless --port, and whether
+    // to keep the log in files too (filelog.rs).
+    let server_txt = announce::read(&data.join("server.txt"));
+    if server_txt.log_to_file {
+        filelog::start(data.join("logs"), &format!("Minetest on a Stick {} (PC build)", env!("CARGO_PKG_VERSION")));
+        log::info!("Keeping the log in {}", data.join("logs").display());
+    }
+    let port = o.port.unwrap_or(server_txt.game_port);
     let address = format!("{}:{}", o.bind, port);
     let socket = UdpSocket::bind(&address).map_err(|e| std::io::Error::new(e.kind(), format!("listening on {address}: {e}")))?;
     let motd = std::fs::read_to_string(d("motd.txt")).ok();
@@ -287,6 +295,7 @@ impl log::Log for Logger {
             return;
         }
         eprintln!("{} {:<5} {}", utc_now(), r.level(), r.args());
+        filelog::push_record(r);
     }
 
     fn flush(&self) {}

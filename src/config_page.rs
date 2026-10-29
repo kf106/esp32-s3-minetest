@@ -521,6 +521,7 @@ fn settle(form: &[(String, String)], current: &Current, board: bool) -> Result<N
     };
     let announce = Announce {
         game_port,
+        log_to_file: on("logfile"),
         enabled: on("ann_on"),
         name: line("ann_name"),
         description: line("ann_desc"),
@@ -807,6 +808,9 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
 <section><h2><img src="/t/doors_item_steel.png" alt="">Game port</h2>
 <div class="two"><div><label class="field" for="port">Port (UDP)</label><input type="text" id="port" name="port" value="{game_port}" maxlength="5" inputmode="numeric" autocomplete="off" placeholder="{default_port}"{port_dis}></div></div>
 <p class="note">{port_note}</p></section>
+<section><h2><img src="/t/default_book_written.png" alt="">Log</h2>
+<label class="toggle wide"><input type="checkbox" id="logfile" name="logfile"{logfile}><img src="/t/default_book_written.png" alt=""><span><b>Keep a log</b><small>Write the log to files as well, one a day, kept for two weeks.</small></span><span class="state"></span></label>
+<p class="note">{log_note}</p></section>
 <section><h2><img src="/t/map_mapping_kit.png" alt="">Public server list</h2>
 <label class="toggle wide"><input type="checkbox" id="ann_on" name="ann_on"{ann_on}{ann_dis}><img src="/t/map_mapping_kit.png" alt=""><span><b>Announce this server</b><small>List it in Luanti's Join Game tab, for anyone to find.</small></span><span class="state"></span></label>
 <p class="hint" id="ann_hint">{ann_hint}</p>
@@ -829,6 +833,12 @@ fn page(c: &Current, error: Option<&str>, board: bool) -> String {
         creative = toggle("creative", "stair_birch_inner.png", "Creative", "Unlimited blocks", c.creative),
         motd = esc(&c.motd),
         game_port = c.announce.game_port,
+        logfile = if c.announce.log_to_file { " checked" } else { "" },
+        log_note = if board {
+            "In logs/ on the SD card (or in the board's flash), as logs/2026-10-28.log and so on: read them with the card in a computer, or with the board as a USB drive. The date and time come from the internet once the board joins Wi-Fi; on the hotspot, the lines go to logs/undated.log."
+        } else {
+            "In logs/ in the data folder, as logs/2026-10-28.log and so on."
+        },
         default_port = announce::DEFAULT_PORT,
         port_dis = if c.fixed_port.is_some() { " disabled" } else { "" },
         port_note = match c.fixed_port {
@@ -952,6 +962,19 @@ mod tests {
             announce: Announce::default(),
             fixed_port: None,
         }
+    }
+
+    #[test]
+    fn log_switch() {
+        let base = [("ssid0", "Home"), ("hs_ssid", "Den"), ("hs_pass", "drawbridge"), ("restart", "wifi")];
+        assert!(!settle(&form(&base), &current(), true).ok().unwrap().announce.log_to_file);
+        let on = form(&[base[0], base[1], base[2], base[3], ("logfile", "on")]);
+        let new = settle(&on, &current(), true).ok().unwrap();
+        assert!(new.announce.log_to_file);
+        assert!(announce::format(&new.announce).contains("log_to_file = true\n"));
+        let html = page(&new.as_current(), None, true);
+        assert!(html.contains(r#"name="logfile" checked>"#) && html.contains("logs/undated.log"));
+        assert!(page(&current(), None, false).contains(r#"name="logfile">"#));
     }
 
     #[test]

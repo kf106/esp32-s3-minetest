@@ -19,6 +19,7 @@ mod falling;
 mod fire;
 mod farming;
 mod fences;
+mod filelog;
 mod fasthash;
 mod font;
 mod furnace;
@@ -73,7 +74,7 @@ use esp_idf_svc::hal::sd::{SdCardConfiguration, SdCardDriver};
 use esp_idf_svc::io::vfs::MountedFatfs;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{AccessPointConfiguration, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiDriver};
-use log::info;
+use log::{info, Log as _};
 
 const MOUNT: &str = "/sd";
 /// Wi-Fi networks, editable on a PC (see wifi_config.rs).
@@ -101,12 +102,81 @@ const HOTSPOT_IP: std::net::Ipv4Addr = std::net::Ipv4Addr::new(192, 168, 4, 1);
 const HOTSPOT_CHANNEL: u8 = 1;
 const HOTSPOT_MAX_DEVICES: u16 = 8;
 
+/// The log: on the serial port as ESP-IDF prints it, and in files as well
+/// when server.txt says so (filelog.rs). Rust's log lines go through
+/// TeeLogger; ESP-IDF's own (Wi-Fi, lwIP and the rest) through
+/// log_vprintf.
+static ESP_LOGGER: esp_idf_svc::log::EspLogger = esp_idf_svc::log::EspLogger::new(esp_idf_svc::log::EspIdfLogFilter::new());
+
+struct TeeLogger;
+
+impl log::Log for TeeLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        ESP_LOGGER.enabled(metadata)
+    }
+
+    fn log(&self, record: &log::Record) {
+        if ESP_LOGGER.enabled(record.metadata()) {
+            ESP_LOGGER.log(record);
+            filelog::push_record(record);
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+static TEE_LOGGER: TeeLogger = TeeLogger;
+
+/// ESP-IDF's log output before ours took its place (its vprintf).
+static PREV_VPRINTF: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" {
+    fn vprintf(format: *const core::ffi::c_char, ap: esp_idf_svc::sys::va_list) -> core::ffi::c_int;
+    fn vsnprintf(s: *mut core::ffi::c_char, n: usize, format: *const core::ffi::c_char, ap: esp_idf_svc::sys::va_list) -> core::ffi::c_int;
+}
+
+/// ESP-IDF's log lines: printed as before, then a copy for the files. (On
+/// the Xtensa, a va_list is a small struct passed by value, so each call
+/// gets its own copy and it can be used twice.)
+unsafe extern "C" fn log_vprintf(format: *const core::ffi::c_char, args: esp_idf_svc::sys::va_list) -> core::ffi::c_int {
+    type Vprintf = unsafe extern "C" fn(*const core::ffi::c_char, esp_idf_svc::sys::va_list) -> core::ffi::c_int;
+    let prev = PREV_VPRINTF.load(std::sync::atomic::Ordering::Relaxed);
+    // (ESP-IDF's own is vprintf, which stands in until it is known.)
+    let n = if prev != 0 {
+        let prev: Vprintf = unsafe { core::mem::transmute(prev) };
+        unsafe { prev(format, args) }
+    } else {
+        unsafe { vprintf(format, args) }
+    };
+    if filelog::enabled() {
+        // Small: this runs on whichever task logs, some with little stack.
+        let mut buf = [0u8; 160];
+        let len = unsafe { vsnprintf(buf.as_mut_ptr().cast(), buf.len(), format, args) };
+        if len > 0 {
+            filelog::push_text(&buf[..(len as usize).min(buf.len() - 1)]);
+        }
+    }
+    n
+}
+
+fn init_logging() {
+    if log::set_logger(&TEE_LOGGER).is_ok() {
+        ESP_LOGGER.filter().initialize();
+    }
+    // Gathered from now on; kept or forgotten once server.txt is read.
+    filelog::capture();
+    let prev = unsafe { esp_idf_svc::sys::esp_log_set_vprintf(Some(log_vprintf)) };
+    if let Some(prev) = prev {
+        PREV_VPRINTF.store(prev as usize, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     esp_idf_svc::sys::link_patches();
     // The USB pins to the serial port, whatever a USB drive session before
     // the last restart left set (see give_usb_to_serial).
     give_usb_to_serial();
-    esp_idf_svc::log::EspLogger::initialize_default();
+    init_logging();
     log_heap("start");
 
     let p = Peripherals::take()?;
@@ -250,10 +320,19 @@ fn main() -> anyhow::Result<()> {
     };
     if boot == Boot::Drive {
         // The server's own use of the files stops first.
+        filelog::stop();
         drop(sd);
         usb_drive(drive, &status);
     }
     let _sd = sd;
+    // The log in files too, if server.txt says so (not as a USB drive: the
+    // PC has the files then).
+    if announce::read(&server_txt).log_to_file {
+        filelog::start(format!("{MOUNT}/logs").into(), &format!("Minetest on a Stick {} on the {}", env!("CARGO_PKG_VERSION"), board::BOARD.name));
+        info!("Keeping the log in {MOUNT}/logs");
+    } else {
+        filelog::stop();
+    }
     let ip = if boot == Boot::Hotspot {
         let driver = WifiDriver::new(p.modem, sysloop.clone(), Some(nvs))?;
         let wifi = start_hotspot(driver, sysloop, &config.hotspot, &status, port)?;
@@ -276,6 +355,12 @@ fn main() -> anyhow::Result<()> {
         let joined = join_wifi(&mut wifi, &networks, &status);
         let ip = wifi.wifi().sta_netif().get_ip_info()?.ip;
         info!("Connected to {joined}, IP address {ip}");
+        // The date and time, from the internet (pool.ntp.org), for the log
+        // files' dates. Kept going for as long as the server runs.
+        match esp_idf_svc::sntp::EspSntp::new_default() {
+            Ok(sntp) => std::mem::forget(sntp),
+            Err(e) => log::warn!("No clock from the internet (SNTP): {e}"),
+        }
         {
             let mut st = status::lock(&status);
             st.address = format!("{ip}:{port}");

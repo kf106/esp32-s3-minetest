@@ -1979,6 +1979,8 @@ impl Server {
         }
         // Time for the notices to go out.
         std::thread::sleep(Duration::from_millis(300));
+        info!("Restarting");
+        crate::filelog::flush();
         #[cfg(target_os = "espidf")]
         unsafe {
             esp_idf_svc::sys::esp_restart()

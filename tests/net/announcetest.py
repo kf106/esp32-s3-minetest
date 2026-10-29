@@ -135,7 +135,8 @@ try:
     assert start["version"].startswith("esp32-s3-minetest-pc-") and " " not in start["version"]
     assert start["damage"] is True and start["creative"] is False and start["pvp"] is False
     assert start["clients"] == 0 and start["clients_list"] == [] and start["clients_max"] == 15
-    assert "address" not in start and "url" not in start and "mods" not in start
+    assert "address" not in start and "url" not in start
+    assert start["mapgen"] == "esp-gen" and "esp:default" in start["mods"] and "esp:mobs" in start["mods"]
     print(f"listed: the game port answered the probe ({listed[port]['ping'] * 1000:.2f} ms)")
 
     # Announcing off on the settings page: off the list before the restart.

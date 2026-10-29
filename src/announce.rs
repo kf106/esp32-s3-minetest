@@ -8,6 +8,7 @@
 //!
 //! ```text
 //! port = 30000
+//! log_to_file = false
 //! server_announce = false
 //! server_name = Minetest on a Stick
 //! server_description = A small world on an ESP32. Be nice.
@@ -20,6 +21,8 @@
 //!
 //! - `port`: the UDP port the game listens on (Luanti's; default 30000,
 //!   Luanti's too). The PC build's `--port` overrides it.
+//! - `log_to_file` (ours): keep the log in files as well, one a day in
+//!   `logs/` (filelog.rs). Off unless set.
 //! - `server_name` and `server_description`: required to announce.
 //! - `server_url`: optional, a web page about the server (http or https).
 //! - `server_address`: optional, a domain name players connect to. Left
@@ -73,6 +76,8 @@ const MAX_ADDRESS: usize = 255;
 pub struct Announce {
     /// The game port (`port`).
     pub game_port: u16,
+    /// Keep the log in files (`log_to_file`, filelog.rs).
+    pub log_to_file: bool,
     /// Whether to announce (the switch).
     pub enabled: bool,
     pub name: String,
@@ -91,6 +96,7 @@ impl Default for Announce {
     fn default() -> Self {
         Announce {
             game_port: DEFAULT_PORT,
+            log_to_file: false,
             enabled: false,
             name: String::new(),
             description: String::new(),
@@ -131,6 +137,7 @@ pub fn parse(text: &str) -> Announce {
                     }
                 }
             }
+            "log_to_file" => a.log_to_file = flag(&v),
             "server_announce" => a.enabled = flag(&v),
             "server_name" => a.name = v,
             "server_description" => a.description = v,
@@ -155,9 +162,14 @@ pub fn parse(text: &str) -> Announce {
 }
 
 const HEADER: &str = "\
-# The server's game port, and announcing it on the public server list
-# (servers.luanti.org), where Luanti's Join Game tab finds it. Change it on
-# the settings page (the board's hotspot, then http://192.168.4.1) or here.
+# The server's game port, its log, and announcing it on the public server
+# list (servers.luanti.org), where Luanti's Join Game tab finds it. Change
+# it on the settings page (the board's hotspot, then http://192.168.4.1) or
+# here.
+";
+
+const LOG_NOTE: &str = "
+# Keep the log in files too, one a day in logs/ (the last two weeks).
 ";
 
 const PORT_NOTE: &str = "
@@ -176,6 +188,8 @@ pub fn format(a: &Announce) -> String {
     let mut t = String::from(HEADER);
     t.push_str(PORT_NOTE);
     t.push_str(&format!("port = {}\n", a.game_port));
+    t.push_str(LOG_NOTE);
+    t.push_str(&format!("log_to_file = {}\n", a.log_to_file));
     t.push_str(LIST_NOTE);
     t.push_str(&format!("server_announce = {}\n", a.enabled));
     t.push_str(&format!("server_name = {}\n", a.name));
@@ -420,6 +434,11 @@ fn js(s: &str) -> String {
 /// and can_see_far_names. Damage is on unless creative mode is (as with
 /// Luanti's enable_damage); players can't hurt each other, so no PvP.
 /// "password" is Luanti's disallow_empty_password.
+///
+/// The list shows "mapgen" and "mods" with the version and game. Ours are
+/// our own: the terrain generator isn't one of Luanti's, so it has a name
+/// of its own, and the "mods" are Minetest Game's mods as rebuilt here
+/// (no Lua), under our own prefix, plus our mobs.
 pub fn json(a: &Announce, port: u16, action: Action, uptime: u64, s: &Snapshot) -> String {
     let mut f: Vec<(&str, String)> = vec![("action", js(action.name())), ("port", port.to_string())];
     if !a.address.is_empty() {
@@ -452,10 +471,24 @@ pub fn json(a: &Announce, port: u16, action: Action, uptime: u64, s: &Snapshot) 
         f.push(("dedicated", "true".into()));
         f.push(("rollback", "false".into()));
         f.push(("privs", js("interact, shout")));
+        f.push(("mapgen", js(MAPGEN)));
+        let mods: Vec<String> = MODS.iter().map(|m| js(&format!("esp:{m}"))).collect();
+        f.push(("mods", format!("[{}]", mods.join(","))));
     }
     let fields: Vec<String> = f.into_iter().map(|(k, v)| format!("{}:{v}", js(k))).collect();
     format!("{{{}}}", fields.join(","))
 }
+
+/// The terrain generator's name on the list (terrain.rs).
+const MAPGEN: &str = "esp-gen";
+
+/// Minetest Game's mods, rebuilt here, and ours (mobs), as the list's
+/// Mods hover shows them.
+const MODS: &[&str] = &[
+    "beds", "binoculars", "boats", "bones", "bucket", "butterflies", "carts", "creative", "default", "doors",
+    "dungeon_loot", "dye", "env_sounds", "farming", "fire", "fireflies", "flowers", "keys", "map", "mobs",
+    "mtg_craftguide", "screwdriver", "sethome", "stairs", "tnt", "vessels", "walls", "weather", "wool", "xpanes",
+];
 
 /// The form Luanti posts: multipart, one field "json". Returns the
 /// content type (with its boundary) and the body.
@@ -730,6 +763,7 @@ mod tests {
             address: "mc.example.org".into(),
             port: Some(30001),
             game_port: 30005,
+            log_to_file: true,
             send_players: false,
             list_url: DEFAULT_LIST_URL.into(),
         };
@@ -763,12 +797,15 @@ mod tests {
         for want in [r#""action":"start""#, r#""port":30001"#, r#""address":"mc.example.org""#, r#""name":"Stick""#,
                      r#""proto_min":53"#, r#""proto_max":53"#, r#""damage":true"#, r#""creative":false"#, r#""pvp":false"#, r#""password":true"#,
                      r#""uptime":75"#, r#""gameid":"minetest""#, r#""game_time":5040"#, r#""clients":2"#, r#""clients_max":6"#,
-                     r#""clients_list":["Ann","Bo \"B\""]"#, r#""dedicated":true"#, r#""privs":"interact, shout""#] {
+                     r#""clients_list":["Ann","Bo \"B\""]"#, r#""dedicated":true"#, r#""privs":"interact, shout""#, r#""mapgen":"esp-gen""#,
+                     r#""mods":["esp:beds","esp:binoculars","#, r#""esp:mobs""#, r#""esp:xpanes"]"#] {
             assert!(j.contains(want), "{want} not in {j}");
         }
         assert!(!j.contains("\"url\""), "no empty url");
         let u = json(&Announce { send_players: false, ..a.clone() }, 30001, Action::Update, 375, &Snapshot { creative: true, ..s.clone() });
         assert!(u.contains(r#""action":"update""#) && u.contains(r#""damage":false"#) && !u.contains("clients_list") && !u.contains("dedicated"));
+        // As Luanti, the mapgen and mods only on start.
+        assert!(!u.contains("mapgen") && !u.contains("mods"));
         let d = json(&a, 30001, Action::Delete, 0, &s);
         assert_eq!(d, r#"{"action":"delete","port":30001,"address":"mc.example.org"}"#);
         let (kind, body) = form(&j);

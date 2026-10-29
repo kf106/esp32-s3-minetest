@@ -56,7 +56,7 @@ print("announcing refused without a description, or with a private address; a ba
 
 status, page = post([("tnt", "on"), ("creative", "on"), ("motd", "Hello\r\nthere"),
                      ("ann_on", "on"), ("ann_name", "Minetest on a Stick"), ("ann_desc", "A small world.\nBe nice"),
-                     ("ann_url", ""), ("ann_addr", "mc.zalmanac.com"), ("ann_port", "30001"), ("nopw", "on"), ("port", str(new_port)), ("restart", "pc")])
+                     ("ann_url", ""), ("ann_addr", "mc.zalmanac.com"), ("ann_port", "30001"), ("nopw", "on"), ("port", str(new_port)), ("logfile", "on"), ("restart", "pc")])
 assert status == 200 and "The server is restarting" in page, page[:300]
 print("saved")
 
@@ -74,7 +74,7 @@ settings = open(os.path.join(data, "world", "settings.txt")).read()
 assert "enable_fire = false" in settings and "enable_tnt = true" in settings and "enable_mobs = false" in settings and "creative_mode = true" in settings and "disallow_empty_password = true" in settings, settings
 assert open(os.path.join(data, "motd.txt")).read() == "Hello\nthere\n"
 server = open(os.path.join(data, "server.txt")).read()
-for want in [f"port = {new_port}", "server_announce = true", "server_name = Minetest on a Stick", "server_description = A small world. Be nice",
+for want in [f"port = {new_port}", "log_to_file = true", "server_announce = true", "server_name = Minetest on a Stick", "server_description = A small world. Be nice",
              "server_address = mc.zalmanac.com", "server_announce_port = 30001", "server_announce_send_players = false"]:
     assert want + "\n" in server, (want, server)
 assert "serverlist_url = http://127.0.0.1:9\n" in server, "the page must keep serverlist_url"
@@ -93,6 +93,7 @@ assert page is not None, "the page didn't come back"
 os.kill(pid, 0)  # still the same process
 assert 'name="creative" checked' in page and 'name="ann_on" checked>' in page and 'name="nopw" checked' in page, "not the new settings"
 assert f'name="port" value="{new_port}"' in page, "not the new port"
+assert 'name="logfile" checked>' in page, "not keeping a log"
 c2 = Client("Tester2", new_port); c2.login(); c2.playerpos()
 # Passwords required now: a newcomer with an empty one is refused, with
 # reason 7 (empty password), as Luanti refuses them.
@@ -104,5 +105,13 @@ c3.send(0, struct.pack(">H", 0x50) + struct.pack(">H", 16) + bytes(16) + struct.
 m = c3.wait_for(0x0A)
 assert m[2] == 7, m
 print("an empty password is refused")
+# The log, in files: a day's file in logs/, with the start-up marker.
+time.sleep(11)
+logs = os.path.join(data, "logs")
+days = [f for f in os.listdir(logs) if f.endswith(".log")] if os.path.isdir(logs) else []
+assert days, "no log file"
+text = open(os.path.join(logs, days[0])).read()
+assert "started ---" in text and "Keeping the log" in text, text[:300]
+print("log kept in", days[0])
 print(f"restarted in place: the page and the game are back, with the new settings, on port {new_port}")
 print("CONFIG PAGE OK")

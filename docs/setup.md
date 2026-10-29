@@ -16,7 +16,8 @@ Format the card as FAT32 and insert it before powering up. Any size will do: a w
 /sd/media/      optional extra media (see below)
 /sd/motd.txt    optional welcome message (see below)
 /sd/wifi.txt    the Wi-Fi networks to join, and the hotspot (see below)
-/sd/server.txt  the game port, and announcing on the public server list (see below)
+/sd/server.txt  the game port, the log, and announcing on the public server list (see below)
+/sd/logs/       the log, one file a day, if switched on (see below)
 ```
 
 All of these are plain text or simple binary files, so you can inspect or edit them on a PC. If a new version changes the terrain generator, the world starts afresh: the old change log is kept as `nodes-v<n>.log`, and the chests', furnaces' and doors' files, bed spawns, signs' text and dropped items as `<file>.v<n>` (`chests.txt.v4`, say). Players keep their inventories; anyone standing inside the new ground is moved up onto it.
@@ -91,6 +92,7 @@ On the hotspot, the board also serves a settings page: join the hotspot with a p
 - **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
 - **Welcome message:** `motd.txt`. Empty means the built-in welcome.
 - **Game port:** the UDP port players connect to (`server.txt`, see [below](#the-game-port)).
+- **Log:** keep the log in files on the card (`server.txt`, see [below](#the-log)).
 - **Public server list:** a name, a description and, optionally, a website, a domain name and the port players use from outside (`server.txt`, see [below](#the-public-server-list)). The switch to announce the server stays greyed out until the details are complete and would pass the list's own checks.
 - **Require passwords:** new players must choose a password (Luanti's `disallow_empty_password`, kept in `world/settings.txt`). Without it, an account made with an empty password can be used by anyone who types that name. Switching announcing on turns it on as well, and you can turn it off again. Accounts already made with an empty password keep working; the administrator can give them one with `/setpassword <name> <password>`.
 - **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
@@ -118,6 +120,22 @@ port = 30001
 
 It takes effect when the board restarts. The board's screen shows the address with the port, and players type that port in Join Game after the address. If your router forwards a port to the board (for the [public server list](#the-public-server-list)), the forwarding must point at the new port too. (The settings page stays on port 80: it is a web page, over TCP.)
 
+## The log
+
+What the board prints on its serial port (the server's own lines, and ESP-IDF's: Wi-Fi, the network and the rest) can be kept in files as well, so you can see what happened without a computer attached. Switch on **Keep a log** on [the settings page](#the-settings-page), or set it in `/sd/server.txt`:
+
+```
+log_to_file = true
+```
+
+It takes effect when the board restarts. Things to know:
+
+- **Where:** `/sd/logs/`, one file a day: `2026-10-28.log` and so on, each line starting with the date and time. The last two weeks are kept, and older days are deleted. Read them with the card in a computer, or with the board as [a USB drive](#as-a-usb-drive). Without a card, they are in the board's flash.
+- **The time is UTC,** and comes from the internet (pool.ntp.org) once the board has joined Wi-Fi, as the board has no clock of its own. Lines from before that, and all lines on the hotspot, which has no internet, carry no date: they go into that day's file once the clock is set, or into `undated.log` if it never is (on the hotspot). That file is moved to `undated-old.log` at 1 MB.
+- **Each start-up** begins with a line such as `--- Minetest on a Stick 0.1.0 on the Waveshare ESP32-S3-LCD-1.47 started ---`.
+- **Writing:** lines are gathered and written every 10 seconds or so, so the last few seconds before a power cut can be missing. Restarting from the settings page writes them first. If more is logged than can be written in time, the log says how many lines were dropped.
+- **The cost:** a few KB of memory, and a small write every few seconds. That's nothing for a card. In flash, wear levelling spreads the writes, but if the board has no card and you don't need the log, leave it off.
+
 ## The public server list
 
 The server can be listed on Luanti's public server list, where anyone finds it in the Join Game tab. The settings are in `/sd/server.txt`, set on [the settings page](#the-settings-page) or by hand, in Luanti's own "name = value" style:
@@ -128,6 +146,7 @@ The server can be listed on Luanti's public server list, where anyone finds it i
 
 ```
 port = 30000
+log_to_file = false
 server_announce = true
 server_name = Minetest on a Stick
 server_description = A small world on an ESP32. Be nice.
@@ -138,6 +157,7 @@ server_announce_send_players = true
 ```
 
 - `port`: the game port (see [above](#the-game-port)).
+- `log_to_file`: keep the log in files (see [above](#the-log)).
 - `server_announce`: whether to announce. It only takes effect when the name and description are filled in and everything passes the list's checks; otherwise the server says why in its log and doesn't announce.
 - `server_name`, `server_description`: what the list shows (one line each, up to 80 and 400 characters).
 - `server_url`: optional, a web page about the server, starting `http://` or `https://`.
@@ -151,7 +171,7 @@ For players outside your home to join, your router must forward **UDP** port 300
 How it works, as a Luanti server does it:
 
 - **When:** a few seconds after start-up the server announces itself ("start"), then again every 5 minutes ("update", with the players online and how long it has been up). The list drops a server it hasn't heard from for five and a half minutes, so a board that is switched off falls off by itself. Switching announcing off on the settings page (or changing the port or domain name) takes the old entry off at once when the board restarts. Not from the hotspot: it has no internet.
-- **What the list shows:** the name, description and website; the players (or only how many); creative mode, or the heart for damage (players can't hurt each other here, so never the sword); and the version as `esp32-s3-minetest-0.1.0`, since this isn't Luanti itself. Only Luanti clients that speak protocol 53 (Luanti 5.17 tested) see it, as those are the only ones the server lets in.
+- **What the list shows:** the name, description and website; the players (or only how many); creative mode, or the heart for damage (players can't hurt each other here, so never the sword); the version as `esp32-s3-minetest-0.1.0`, since this isn't Luanti itself, with the game `minetest` and the terrain generator `esp-gen`; and, when you hover over that, the Minetest Game mods rebuilt here, plus the mobs, as `esp:default`, `esp:doors` and so on (there are no Lua mods). Only Luanti clients that speak protocol 53 (Luanti 5.17 tested) see it, as those are the only ones the server lets in.
 - **The check:** after each announcement the list tries the game port from outside, as a client would. If that fails (no port forwarding, or a shared public address), the board isn't listed, and the next announcement hears why: the log says "did not respond to ping", and the status screen shows "Server list: can't reach us". The status screen also shows "Server list: announced" when it starts, and "Server list: no answer" if the list can't be reached (it then tries again every minute).
 - **Its cost:** each announcement is an HTTPS request, a second or two of work in the background. The board stays fully awake (no Wi-Fi power saving) for half a minute after each, so it answers the list's check promptly.
 

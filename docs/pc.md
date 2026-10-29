@@ -19,6 +19,7 @@ minetest-server [--port 30000] [--bind 0.0.0.0] [--data minetest-data]
 ```
 
 - `--data` is the folder for the world, accounts and players, laid out as the board's SD card: `auth/`, `world/`, `players/`, and optionally `media/` for extra skins and `motd.txt` for your own welcome message (see [The SD card](setup.md#the-sd-card)). It is made if it isn't there. To start afresh, stop the server and delete it.
+- **The log** goes to stderr, as before. With `log_to_file = true` in the data folder's `server.txt` (or **Keep a log** on the settings page), it is also kept in `logs/` in the data folder, one file a day, for two weeks (see [setup.md](setup.md#the-log)).
 - `--port` sets the game port. Without it, the port is `port` in the data folder's `server.txt` (see [setup.md](setup.md#the-game-port)), or 30000, and the settings page can change it; with it, `--port` wins, and the page shows the port without letting it be changed.
 - `--max-players` defaults to 15, Luanti's own default; a PC has the power the board lacks.
 - It keeps much larger caches than the board (up to about 60 MB), so players returning to a place find it already worked out. Built for a 32-bit machine (a router, say), or with `MINETEST_SMALL_CACHES=1` set while building, it keeps the board's small ones.
@@ -27,7 +28,7 @@ minetest-server [--port 30000] [--bind 0.0.0.0] [--data minetest-data]
 
 ## The settings page
 
-The PC build serves the board's [settings page](setup.md#the-settings-page) too, for the game rules, the welcome message and [the public server list](setup.md#the-public-server-list). The log says where:
+The PC build serves the board's [settings page](setup.md#the-settings-page) too, for the game rules, the welcome message, the game port, the log and [the public server list](setup.md#the-public-server-list). The log says where:
 
 ```
 Settings page at http://127.0.0.1:8080/

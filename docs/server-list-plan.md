@@ -129,9 +129,12 @@ ESP-IDF v5.5.1 `components/mbedtls/Kconfig`.
     creative; `pvp` false (players can't hurt each other); `password` false.
   - `clients`, `clients_max`, `clients_list` (if
     `server_announce_send_players`), `uptime` (since start-up), `game_time`.
-  - On start: `dedicated` true, `rollback` false, `privs` "interact, shout".
-  - Left out as not ours to claim: `mods`, `mapgen`, `can_see_far_names`,
-    `lag`.
+  - On start: `dedicated` true, `rollback` false, `privs` "interact, shout",
+    `mapgen` "esp-gen" (our own generator's name), and `mods`: Minetest
+    Game's mods as rebuilt here, plus our mobs, as `esp:default`,
+    `esp:doors` and so on (Keir's decision: the list's Mods hover then
+    shows what's in the game).
+  - Left out: `can_see_far_names`, `lag`.
 - **Power saving:** each announcement calls `Server::wake`, so the radio
   stays awake for 30 s and answers the list's probe promptly.
 - **Delete:** at a restart for new settings
