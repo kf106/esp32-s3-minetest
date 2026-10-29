@@ -32,6 +32,31 @@ blocks = 0; end = time.time() + 20
 while time.time() < end and blocks < 50:
     c.pump(0.1); blocks += len(c.take(0x20))
 print("blocks", blocks); assert blocks >= 50
+# Every file, as a new player's client asks for them: sent a bunch at a
+# time, every file whole. (In requests of 40 names: this client doesn't
+# split what it sends, as Luanti's does.)
+import os, zstandard
+media = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "media")
+names = sorted(f for f in os.listdir(media) if f.endswith((".png", ".ogg", ".b3d", ".obj")))
+c.pump(0.3); c.take(0x38)  # the empty answer to the login's request
+for i in range(0, len(names), 40):
+    part = names[i:i + 40]
+    c.send(1, struct.pack(">HH", 0x40, len(part)) + b"".join(struct.pack(">H", len(n)) + n.encode() for n in part))
+got = {}; bunches = 0; end = time.time() + 120
+while time.time() < end and len(got) < len(names):
+    c.pump(0.05)
+    for m in c.take(0x38):
+        bunches += 1
+        o = 10
+        for _ in range(struct.unpack_from(">I", m, 6)[0]):
+            n = u16(m, o); name = m[o + 2:o + 2 + n].decode(); o += 2 + n
+            ln = struct.unpack_from(">I", m, o)[0]; data = m[o + 4:o + 4 + ln]; o += 4 + ln
+            got[name] = zstandard.ZstdDecompressor().decompressobj().decompress(data)
+missing = [n for n in names if n not in got]
+assert not missing, (len(missing), missing[:5])
+bad = [n for n in names if got[n] != open(os.path.join(media, n), "rb").read()]
+assert not bad, bad[:5]
+print(f"media: {len(names)} files in {bunches} bunches, all whole")
 say(c, "/status")
 l = heard(c, "# Server")
 print(l[-1]); assert any("PC build" in x and "players (1/3)" in x for x in l)

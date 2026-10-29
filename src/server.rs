@@ -113,6 +113,11 @@ const IDLE_POWER_SAVE: Duration = Duration::from_secs(30);
 /// How many reliable packets may be in flight (unacknowledged) per channel.
 /// Luanti's own minimum window is 32.
 const RELIABLE_WINDOW: usize = 32;
+/// Media go on channel 2, as Luanti's server sends them.
+const MEDIA_CHANNEL: usize = 2;
+/// Media bunches are built while fewer than this many packets wait for a
+/// client on that channel (a bunch is a few packets of about 1.4 KB).
+const MEDIA_QUEUE_PACKETS: usize = 8;
 /// Reliable packets from a client that arrive ahead of a missing one are
 /// kept (and acknowledged) if they are at most this far ahead, as Luanti
 /// does. Dropping them instead makes the client resend them with growing
@@ -491,6 +496,9 @@ struct Peer {
     /// it gives (Luanti's UDPPeer::reportRTT).
     avg_rtt: Option<f32>,
     resend_timeout: Duration,
+    /// Media still to send, a TOCLIENT_MEDIA at a time as the client takes
+    /// them (feed_media): each bunch's count, index and file names.
+    media: VecDeque<(u16, u16, Vec<String>)>,
 }
 
 impl Peer {
@@ -587,6 +595,7 @@ impl Peer {
             breath_full_since: None,
             avg_rtt: None,
             resend_timeout: RESEND_INTERVAL,
+            media: VecDeque::new(),
         }
     }
 
@@ -2044,9 +2053,41 @@ impl Server {
             }
         }
         info!("Client requested {} media files: {}", names.len(), names.join(", "));
-        let bunches = build_media_bunches(&files);
-        for bunch in bunches {
-            self.send_command(from, 2, &bunch);
+        // Planned now, built and sent a bunch at a time as the client takes
+        // them (feed_media): a new player can ask for a couple of MB, and
+        // all of it at once, in several copies, once ran the board out of
+        // memory.
+        let sizes: Vec<(&str, usize)> = files.iter().map(|(n, d)| (*n, d.len())).collect();
+        let bunches = plan_media_bunches(&sizes);
+        let count = bunches.len() as u16;
+        if let Some(peer) = self.peers.get_mut(&from) {
+            peer.media.extend(bunches.into_iter().enumerate().map(|(i, b)| (count, i as u16, b)));
+        }
+        self.feed_media(from);
+    }
+
+    /// Send the next media bunches to a client while few packets are
+    /// waiting for it on the media channel, so only a few bunches are ever
+    /// in memory at once. Called again each tick until all are sent.
+    fn feed_media(&mut self, addr: SocketAddr) {
+        loop {
+            let Some(peer) = self.peers.get_mut(&addr) else {
+                return;
+            };
+            if peer.channels[MEDIA_CHANNEL].queue.len() >= MEDIA_QUEUE_PACKETS {
+                return;
+            }
+            let Some((count, index, names)) = peer.media.pop_front() else {
+                return;
+            };
+            let bunch = {
+                let files: Vec<(&str, &[u8])> = names
+                    .iter()
+                    .filter_map(|n| self.content.media.get(n).map(|f| (f.name.as_str(), &f.data[..])))
+                    .collect();
+                build_media_bunch(count, index, &files)
+            };
+            self.send_command(addr, MEDIA_CHANNEL, &bunch);
         }
     }
 
@@ -7933,6 +7974,10 @@ impl Server {
             self.restart_for_settings();
         }
         let now = Instant::now();
+        let feeding: Vec<SocketAddr> = self.peers.iter().filter(|(_, p)| !p.media.is_empty()).map(|(a, _)| *a).collect();
+        for addr in feeding {
+            self.feed_media(addr);
+        }
         timed!(self, "finish_srp", self.finish_srp());
         timed!(self, "send_blocks", self.send_blocks());
         if now.duration_since(self.items_stepped) >= ITEM_STEP_INTERVAL {

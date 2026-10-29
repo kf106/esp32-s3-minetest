@@ -388,8 +388,44 @@ pub fn build_announce_media<'a>(files: impl Iterator<Item = (&'a str, &'a [u8; 2
     w.into_inner()
 }
 
+/// How many bytes of files go in one TOCLIENT_MEDIA (Luanti's bunch
+/// size).
+pub const MEDIA_BUNCH_BYTES: usize = 5000;
+
+/// The requested files in bunches of about MEDIA_BUNCH_BYTES (their size
+/// as stored, as the Luanti server counts), by name, to be sent one
+/// TOCLIENT_MEDIA at a time (build_media_bunch).
+pub fn plan_media_bunches(files: &[(&str, usize)]) -> Vec<Vec<String>> {
+    let mut bunches: Vec<Vec<String>> = vec![Vec::new()];
+    let mut size = 0;
+    for (name, len) in files {
+        size += len;
+        bunches.last_mut().unwrap().push(name.to_string());
+        if size >= MEDIA_BUNCH_BYTES {
+            bunches.push(Vec::new());
+            size = 0;
+        }
+    }
+    if bunches.len() > 1 && bunches.last().unwrap().is_empty() {
+        bunches.pop();
+    }
+    bunches
+}
+
+/// One TOCLIENT_MEDIA: bunch `index` of `count`, its files zstd-compressed.
+pub fn build_media_bunch(count: u16, index: u16, files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut w = Writer::new(TOCLIENT_MEDIA);
+    w.u16(count).u16(index).u32(files.len() as u32);
+    for (name, data) in files {
+        w.string16(name).bytes32(&compress(data));
+    }
+    w.into_inner()
+}
+
 /// TOCLIENT_MEDIA packets for the requested files, in bunches of about
-/// 5 KB like the Luanti server. Each file is zstd-compressed.
+/// 5 KB like the Luanti server. Each file is zstd-compressed. (All at
+/// once: the tests'. The server sends them a bunch at a time.)
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_media_bunches(files: &[(&str, &[u8])]) -> Vec<Vec<u8>> {
     const BYTES_PER_BUNCH: usize = 5000;
 
@@ -1971,5 +2007,22 @@ mod player_tests {
         assert_eq!(player_properties_message("character.png", Posture::Stand, 0.0)[4], 1);
         assert_eq!(player_properties_message("character.png", Posture::Lie, 0.0)[4], 0);
         assert_eq!(player_properties_message("character.png", Posture::Sit, 0.0)[4], 0);
+    }
+}
+
+#[cfg(test)]
+mod media_tests {
+    use super::*;
+
+    #[test]
+    fn media_planned_in_bunches() {
+        let files = [("a.png", 3000), ("b.png", 3000), ("c.ogg", 60_000), ("d.png", 100)];
+        let plan = plan_media_bunches(&files);
+        assert_eq!(plan, vec![vec!["a.png".to_string(), "b.png".to_string()], vec!["c.ogg".to_string()], vec!["d.png".to_string()]]);
+        assert_eq!(plan_media_bunches(&[]), vec![Vec::<String>::new()]);
+        let bunch = build_media_bunch(3, 1, &[("c.ogg", &[7u8; 100][..])]);
+        // The command, count, index and number of files, then the name.
+        assert_eq!(&bunch[..10], &[0x00, 0x38, 0, 3, 0, 1, 0, 0, 0, 1]);
+        assert_eq!(&bunch[10..17], b"\x00\x05c.ogg");
     }
 }
