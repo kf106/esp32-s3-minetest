@@ -7,18 +7,6 @@ use std::time::Instant;
 
 /// How many recent events the screen keeps.
 const EVENTS: usize = 3;
-/// How many chat lines the Chat page keeps.
-const CHAT_LINES: usize = 20;
-
-/// A line of public chat, for the Chat page.
-#[derive(Clone)]
-pub struct ChatLine {
-    pub name: String,
-    pub text: String,
-    /// A "/me" action ("* Jim waves") rather than something said.
-    pub action: bool,
-}
-
 /// A QR code, as rows of modules (true for dark), `size` on a side.
 pub struct Qr {
     pub size: usize,
@@ -76,8 +64,6 @@ pub struct Status {
     pub joins: u64,
     pub leaves: u64,
     pub chats: u64,
-    /// Recent public chat, oldest first.
-    pub chat: VecDeque<ChatLine>,
     /// Set when the board runs its own hotspot rather than joining Wi-Fi.
     pub hotspot: Option<Arc<Hotspot>>,
     /// While BOOT is watched at start-up (for a hotspot or the USB drive),
@@ -93,6 +79,21 @@ pub struct Status {
     /// Set while the board is a USB drive (or failed to become one): the
     /// screen shows its own page then.
     pub usb_drive: Option<UsbDrive>,
+    /// Whether the log is kept in files (filelog.rs), for the Logs page.
+    pub log_kept: bool,
+    /// The Logs page's download page (config_page.rs, log_server), as
+    /// lcd.rs shows it: how far BOOT has been held towards opening it (0
+    /// to 1), and, while it is open, its address and how long it has left.
+    pub log_hold: Option<f32>,
+    pub log_server: Option<LogServer>,
+}
+
+/// The log download page, for the Logs page.
+#[derive(Clone)]
+pub struct LogServer {
+    /// What to type in a browser: "192.168.68.136/K7Q3XZ".
+    pub address: String,
+    pub left_secs: u32,
 }
 
 /// The USB drive, for its screen.
@@ -160,22 +161,20 @@ impl Status {
             joins: 0,
             leaves: 0,
             chats: 0,
-            chat: VecDeque::new(),
             hotspot: None,
             boot_window: false,
             boot_hold: None,
             usb_drive: None,
+            log_kept: false,
+            log_hold: None,
+            log_server: None,
         }))
     }
 
-    /// A line of public chat: counted (for the LED) and kept for the Chat
-    /// page.
-    pub fn chat_line(&mut self, line: ChatLine) {
+    /// A line of public chat, counted for the LED. (The chat itself is in
+    /// the log.)
+    pub fn chat_line(&mut self) {
         self.chats += 1;
-        if self.chat.len() == CHAT_LINES {
-            self.chat.pop_front();
-        }
-        self.chat.push_back(line);
     }
 
     pub fn event(&mut self, text: String) {

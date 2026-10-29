@@ -5028,7 +5028,7 @@ impl Server {
         }
         self.tell_all(&format!("<{name}> {text}"));
         self.event(format!("{name}: {text}"));
-        status::lock(&self.status).chat_line(status::ChatLine { name, text, action: false });
+        status::lock(&self.status).chat_line();
     }
 
     /// Like Luanti's status line: version, uptime, time of day, players.

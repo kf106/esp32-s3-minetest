@@ -35,9 +35,9 @@
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{info, warn};
 
@@ -294,6 +294,191 @@ fn handle(mut stream: TcpStream, files: &Files) -> io::Result<()> {
         }
         ("GET", "/favicon.ico") => respond(&mut stream, "200 OK", "image/png", "Cache-Control: max-age=86400\r\n", texture("default_meselamp.png").unwrap_or(&[])),
         _ => respond(&mut stream, "404 Not Found", "text/plain", "", b"Not found"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The log download page
+// ---------------------------------------------------------------------------
+//
+// Opened from the board's Logs page (lcd.rs: hold BOOT for 3 s), for
+// LOG_SERVER_OPEN at most, on the network the board is on: a list of the
+// log's files (filelog.rs) to download. Only at an address with a random
+// part, shown on the board's screen, so it takes someone at the board to
+// open it; nothing else is served. Its thread, and so its memory, exists
+// only while it is open.
+
+// (The board only; the PC build has no button to open it.)
+#[cfg_attr(not(target_os = "espidf"), allow(unused_imports))]
+pub use log_server::{log_server_left, start_log_server, stop_log_server, LOG_SERVER_OPEN};
+
+#[cfg_attr(not(target_os = "espidf"), allow(dead_code))]
+mod log_server {
+    use super::*;
+
+    /// How long the download page stays open.
+    pub const LOG_SERVER_OPEN: Duration = Duration::from_secs(10 * 60);
+    /// Its thread's stack.
+    const LOG_SERVER_STACK: usize = 8 * 1024;
+
+    static LOG_SERVER_ON: AtomicBool = AtomicBool::new(false);
+    static LOG_SERVER_STOP: AtomicBool = AtomicBool::new(false);
+    static LOG_SERVER_UNTIL: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+    /// Open the download page for `open` (LOG_SERVER_OPEN), on the first of
+    /// `ports` that is free (80; the hotspot's settings page has it there),
+    /// serving `dir` at /`token`. Returns the port.
+    pub fn start_log_server(dir: PathBuf, token: String, ports: &[u16], open: Duration) -> io::Result<u16> {
+        if LOG_SERVER_ON.swap(true, Ordering::SeqCst) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, "the log download page is already open"));
+        }
+        let bound = ports.iter().find_map(|&p| {
+            let l = TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, p)).ok()?;
+            let port = l.local_addr().map_or(p, |a| a.port());
+            Some((l, port))
+        });
+        let Some((listener, port)) = bound else {
+            LOG_SERVER_ON.store(false, Ordering::SeqCst);
+            return Err(io::Error::new(io::ErrorKind::AddrInUse, format!("no free port for the log download page (tried {ports:?})")));
+        };
+        if let Err(e) = listener.set_nonblocking(true) {
+            LOG_SERVER_ON.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+        let until = Instant::now() + open;
+        *LOG_SERVER_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) = Some(until);
+        LOG_SERVER_STOP.store(false, Ordering::SeqCst);
+        let spawned = spawn_on_server_core(b"logs\0", LOG_SERVER_STACK, move || {
+            info!("Log download page open on port {port} for {} minutes", open.as_secs() / 60);
+            while !LOG_SERVER_STOP.load(Ordering::SeqCst) && Instant::now() < until {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let served = stream.set_nonblocking(false).and_then(|_| log_server_handle(stream, &dir, &token));
+                        if let Err(e) = served {
+                            warn!("Log download page: {e}");
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(100)),
+                    Err(e) => {
+                        warn!("Log download page: {e}");
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+            }
+            drop(listener);
+            *LOG_SERVER_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            LOG_SERVER_ON.store(false, Ordering::SeqCst);
+            info!("Log download page closed");
+        });
+        if let Err(e) = spawned {
+            *LOG_SERVER_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            LOG_SERVER_ON.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
+        Ok(port)
+    }
+
+    /// Close the download page (within a tenth of a second).
+    pub fn stop_log_server() {
+        LOG_SERVER_STOP.store(true, Ordering::SeqCst);
+    }
+
+    /// How long the download page has left, while it is open.
+    pub fn log_server_left() -> Option<Duration> {
+        if !LOG_SERVER_ON.load(Ordering::SeqCst) {
+            return None;
+        }
+        let until = (*LOG_SERVER_UNTIL.lock().unwrap_or_else(|e| e.into_inner()))?;
+        Some(until.saturating_duration_since(Instant::now()))
+    }
+
+    /// /`token`: the list of files; /`token`/<file>: that file, to download;
+    /// /t/...: the page's textures. Anything else: not found.
+    fn log_server_handle(mut stream: TcpStream, dir: &Path, token: &str) -> io::Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(30)))?;
+        let req = read_request(&mut stream)?;
+        let not_found = |stream: &mut TcpStream| respond(stream, "404 Not Found", "text/plain", "", b"Not found");
+        if req.method != "GET" {
+            return not_found(&mut stream);
+        }
+        if let Some(name) = req.path.strip_prefix("/t/") {
+            return match texture(name) {
+                Some(png) => respond(&mut stream, "200 OK", "image/png", "Cache-Control: max-age=86400\r\n", png),
+                None => not_found(&mut stream),
+            };
+        }
+        let path = req.path.split('?').next().unwrap_or("");
+        let Some(rest) = path.strip_prefix('/').and_then(|p| p.strip_prefix(token)) else {
+            return not_found(&mut stream);
+        };
+        let name = rest.trim_start_matches('/');
+        if !rest.is_empty() && !rest.starts_with('/') {
+            return not_found(&mut stream);
+        }
+        // What is waiting to be written goes out first, so the latest lines are
+        // there.
+        crate::filelog::flush();
+        let no_cache = "Cache-Control: no-store\r\n";
+        if name.is_empty() {
+            let page = log_list_page(dir, token);
+            return respond(&mut stream, "200 OK", "text/html; charset=utf-8", no_cache, page.as_bytes());
+        }
+        if !crate::filelog::is_log_name(name) {
+            return not_found(&mut stream);
+        }
+        // The file, a piece at a time (a day can be a few hundred KB).
+        let Ok(mut file) = std::fs::File::open(dir.join(name)) else {
+            return not_found(&mut stream);
+        };
+        let len = file.metadata()?.len();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {len}\r\nContent-Disposition: attachment; filename=\"{name}\"\r\n{no_cache}Connection: close\r\n\r\n"
+        );
+        stream.write_all(head.as_bytes())?;
+        io::copy(&mut (&mut file).take(len), &mut stream)?;
+        stream.flush()
+    }
+
+    /// The list of log files, newest day first, each to download.
+    fn log_list_page(dir: &Path, token: &str) -> String {
+        let mut files: Vec<(String, u64)> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().into_string().ok()?;
+                        crate::filelog::is_log_name(&name).then(|| (name.clone(), e.metadata().map_or(0, |m| m.len())))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let undated = |n: &str| n.starts_with("undated");
+        files.sort_by(|a, b| undated(&a.0).cmp(&undated(&b.0)).then(b.0.cmp(&a.0)));
+        let rows: String = files
+            .iter()
+            .map(|(name, len)| {
+                format!(
+                    r#"<div class="logrow"><b>{day}</b><span class="size">{size}</span><a class="btn go" href="/{token}/{name}" download>Download</a></div>"#,
+                    day = esc(name.trim_end_matches(".log")),
+                    size = if *len >= 10 * 1024 { format!("{} KB", len / 1024) } else { format!("{len} bytes") },
+                    token = esc(token),
+                    name = esc(name),
+                )
+            })
+            .collect();
+        let rows = if rows.is_empty() { r#"<p class="note">Nothing logged yet.</p>"#.to_string() } else { rows };
+        let left = log_server_left().map_or(0, |d| d.as_secs().div_ceil(60));
+        format!(
+            r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Log files</title><link rel="icon" href="/t/default_book_written.png"><style>{STYLE}
+    .logrow{{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:10px 0;border-bottom:2px solid #000}}.logrow b{{flex:1 1 120px}}.logrow .size{{color:var(--dim);font-size:14px;min-width:70px}}body{{padding-bottom:24px}}</style></head><body>
+    <header></header>
+    <div class="title"><img src="/t/default_book_written.png" alt=""><div><h1>Log files</h1><p class="sub">One file a day, newest first. Times in them are UTC.</p></div></div>
+    <main><section><h2><img src="/t/default_paper.png" alt="">Days</h2>
+    {rows}
+    <p class="note">This page closes in {left} minutes or less, or when BOOT is pressed on the board. To open it again, hold BOOT for 3 seconds on the board's Logs page: the address will be a new one.</p></section></main></body></html>"#
+        )
     }
 }
 
@@ -975,6 +1160,44 @@ mod tests {
         let html = page(&new.as_current(), None, true);
         assert!(html.contains(r#"name="logfile" checked>"#) && html.contains("logs/undated.log"));
         assert!(page(&current(), None, false).contains(r#"name="logfile">"#));
+    }
+
+    #[test]
+    fn log_download_page() {
+        let dir = std::env::temp_dir().join(format!("logserver-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2026-10-28.log"), "2026-10-28 21:40:12 I server: CHAT: <Gandalf> hello\n").unwrap();
+        std::fs::write(dir.join("2026-10-29.log"), "x\n").unwrap();
+        std::fs::write(dir.join("server.txt"), "secret\n").unwrap();
+        let port = start_log_server(dir.clone(), "K7Q3XZ".into(), &[0], Duration::from_secs(60)).unwrap();
+        assert!(start_log_server(dir.clone(), "AAAAAA".into(), &[0], Duration::from_secs(60)).is_err(), "only one at a time");
+        let get = |path: &str| {
+            let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+            let mut out = Vec::new();
+            s.read_to_end(&mut out).unwrap();
+            String::from_utf8_lossy(&out).into_owned()
+        };
+        let list = get("/K7Q3XZ/");
+        assert!(list.starts_with("HTTP/1.1 200") && list.contains("2026-10-29") && list.contains(r#"href="/K7Q3XZ/2026-10-28.log""#), "{list}");
+        assert!(list.find("2026-10-29").unwrap() < list.find("2026-10-28").unwrap(), "newest first");
+        assert!(!list.contains("server.txt"));
+        let file = get("/K7Q3XZ/2026-10-28.log");
+        assert!(file.contains("attachment; filename=\"2026-10-28.log\"") && file.ends_with("<Gandalf> hello\n"), "{file}");
+        for bad in ["/", "/logs", "/WRONG1/", "/K7Q3XZ/server.txt", "/K7Q3XZ/../server.txt", "/K7Q3XZX/", "/K7Q3XZ2026-10-28.log"] {
+            assert!(get(bad).starts_with("HTTP/1.1 404"), "{bad}");
+        }
+        assert!(get("/t/default_paper.png").starts_with("HTTP/1.1 200"));
+        assert!(log_server_left().is_some_and(|d| d > Duration::from_secs(50)));
+        stop_log_server();
+        let t = Instant::now();
+        while log_server_left().is_some() && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(log_server_left().is_none(), "closed");
+        assert!(TcpStream::connect(("127.0.0.1", port)).is_err(), "nothing listening");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

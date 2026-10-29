@@ -1196,11 +1196,6 @@ fn main() {
             packets_in_per_s: 21.0, packets_out_per_s: 64.0, cpu: [Some(37.0), Some(6.0)],
             server_busy: 31.0, block_ms: Some(48.6), sd: Some((31_914_983_424, 31_901_327_360)), chip_temp: Some(52.4),
         };
-        for (n, t, a) in [("Jim", "anyone seen the birch wood near spawn?", false), ("Steve", "yes, just east of the desert", false),
-                          ("Jim", "waves", true), ("Steve", "I put torches along the path so you can find it at night, follow them north", false),
-                          ("Jim", "thanks!", false), ("Äijä", "Hyvää yötä! Mökillä on jäätä, Åland ja smörgåsbord", false)] {
-            s.chat_line(status::ChatLine { name: n.into(), text: t.into(), action: a });
-        }
         let hot = wifi_config::Network { ssid: "Luanti".into(), password: "LuantiLuanti".into() };
         let mut hs = s.clone();
         hs.address = "192.168.4.1:30000".into();
@@ -1210,9 +1205,23 @@ fn main() {
         let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
         f.write_be(0..screen::HEIGHT, &mut out);
         std::fs::write(format!("{OUT}/page0.rgb565"), out).unwrap();
-        for (page, name) in [(screen::Page::Overview, "page1"), (screen::Page::Device, "page2"), (screen::Page::Chat, "page3")] {
+        s.log_kept = true;
+        for (page, name) in [(screen::Page::Overview, "page1"), (screen::Page::Device, "page2"), (screen::Page::Logs, "page3")] {
             let mut f = screen::Frame::new();
             screen::render(&mut f, &screen::View { page, status: &s, system: &sys });
+            let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
+            f.write_be(0..screen::HEIGHT, &mut out);
+            std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();
+        }
+        // The Logs page: BOOT held towards the download page, the page
+        // open, and no log kept.
+        for (name, hold, open, kept) in [("logs1", Some(0.6), false, true), ("logs2", None, true, true), ("logs3", None, false, false)] {
+            let mut l = s.clone();
+            l.log_kept = kept;
+            l.log_hold = hold;
+            l.log_server = open.then(|| status::LogServer { address: "192.168.68.136/K7Q3XZ".into(), left_secs: 583 });
+            let mut f = screen::Frame::new();
+            screen::render(&mut f, &screen::View { page: screen::Page::Logs, status: &l, system: &sys });
             let mut out = vec![0u8; screen::WIDTH * screen::HEIGHT * 2];
             f.write_be(0..screen::HEIGHT, &mut out);
             std::fs::write(format!("{OUT}/{name}.rgb565"), out).unwrap();

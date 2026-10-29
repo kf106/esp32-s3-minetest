@@ -339,6 +339,11 @@ fn run(lcd: Lcd, status: SharedStatus) {
     let mut hotspot = false;
     // The BOOT hold bar as last drawn (see Status::boot_hold).
     let mut hold_drawn: Option<f32> = None;
+    // The Logs page's download page: when BOOT went down towards opening
+    // it, its address while open, and whether it was open last time round.
+    let mut log_hold_start: Option<Instant> = None;
+    let mut log_address: Option<String> = None;
+    let mut log_was_open = false;
     // The chip's temperature, read every few seconds for the LED's colour
     // (and shown on the Device page).
     let mut chip_temp: Option<f32> = None;
@@ -354,7 +359,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
         }
         // The LED, whether the screen is on or off: breathing and flashing
         // (see indicator.rs).
-        let (state, counts, hotspot_now, window, hold) = {
+        let (state, counts, hotspot_now, window, hold, log_kept) = {
             let st = status::lock(&status);
             let state = if st.address.starts_with("Wi-Fi") {
                 State::NoWifi
@@ -364,7 +369,7 @@ fn run(lcd: Lcd, status: SharedStatus) {
                 let colour = chip_temp.map_or(screen::chip_colour(0.0), screen::chip_colour);
                 State::Running { players: st.players.len(), colour }
             };
-            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some(), st.boot_window, st.boot_hold)
+            (state, (st.joins, st.leaves, st.chats, status::problems()), st.hotspot.is_some(), st.boot_window, st.boot_hold, st.log_kept)
         };
         if hotspot_now && !hotspot {
             hotspot = true;
@@ -408,7 +413,46 @@ fn run(lcd: Lcd, status: SharedStatus) {
         if cfg!(perf) {
             load_log.maybe_log(&status);
         }
-        let pressed = button.pressed() && !window;
+        let mut pressed = button.pressed() && !window;
+        let down = button.down() && !window;
+        // The Logs page: BOOT held for LOG_HOLD opens the log download page
+        // (config_page.rs); a press while it is open closes it. A shorter
+        // press turns the page, on letting go.
+        let log_open = crate::config_page::log_server_left();
+        let mut log_changed = log_open.is_some() != log_was_open;
+        log_was_open = log_open.is_some();
+        if screen_on && page == Page::Logs {
+            if log_open.is_some() {
+                if pressed {
+                    crate::config_page::stop_log_server();
+                    pressed = false;
+                    log_changed = true;
+                    last_press = Instant::now();
+                }
+            } else if log_kept {
+                if pressed {
+                    log_hold_start = Some(Instant::now());
+                    pressed = false;
+                    last_press = Instant::now();
+                }
+                if let Some(t) = log_hold_start {
+                    if !down {
+                        log_hold_start = None;
+                        page = page.next(hotspot);
+                        log_changed = true;
+                        last_press = Instant::now();
+                    } else if t.elapsed() >= LOG_HOLD {
+                        log_hold_start = None;
+                        log_address = open_log_server(&status);
+                        log_changed = true;
+                        last_press = Instant::now();
+                    }
+                }
+            }
+        } else {
+            log_hold_start = None;
+        }
+        let log_holding = log_hold_start.is_some();
         let hold_changed = hold != hold_drawn;
         if hold_changed {
             hold_drawn = hold;
@@ -430,7 +474,9 @@ fn run(lcd: Lcd, status: SharedStatus) {
                 continue;
             }
         }
-        if screen_on && last_press.elapsed() >= SCREEN_TIMEOUT {
+        // (Not while the log download page is open or being opened: its
+        // address is on the screen.)
+        if screen_on && last_press.elapsed() >= SCREEN_TIMEOUT && log_open.is_none() && !log_holding {
             screen_on = false;
             if let Err(e) = lcd.set_on(false) {
                 warn!("LCD off: {e}");
@@ -440,13 +486,17 @@ fn run(lcd: Lcd, status: SharedStatus) {
             std::thread::sleep(BUTTON_POLL);
             continue;
         }
-        if !pressed && !hold_changed && drawn.is_some_and(|t| t.elapsed() < REFRESH) {
+        if !pressed && !hold_changed && !log_changed && !log_holding && drawn.is_some_and(|t| t.elapsed() < REFRESH) {
             std::thread::sleep(BUTTON_POLL);
             continue;
         }
         drawn = Some(Instant::now());
 
-        let snapshot = status::lock(&status).clone();
+        let mut snapshot = status::lock(&status).clone();
+        snapshot.log_hold = log_hold_start.map(|t| t.elapsed().as_secs_f32() / LOG_HOLD.as_secs_f32());
+        snapshot.log_server = crate::config_page::log_server_left()
+            .zip(log_address.clone())
+            .map(|(left, address)| status::LogServer { address, left_secs: left.as_secs() as u32 });
         let now = Instant::now();
         let dt = now.duration_since(last.0).as_secs_f32().max(0.001);
         // Server load and block time since the last redraw.
@@ -489,6 +539,28 @@ fn run(lcd: Lcd, status: SharedStatus) {
         screen::render(&mut frame, &View { page, status: &snapshot, system: &sys });
         if let Err(e) = lcd.show(&frame) {
             warn!("LCD update failed: {e}");
+        }
+    }
+}
+
+/// How long BOOT is held on the Logs page to open the log download page.
+const LOG_HOLD: Duration = Duration::from_secs(3);
+
+/// Open the log download page (config_page.rs) at a new random address,
+/// on port 80, or 8080 if the hotspot's settings page has 80. Returns what
+/// to type in a browser: "192.168.68.136/K7Q3XZ".
+fn open_log_server(status: &SharedStatus) -> Option<String> {
+    // Letters and digits that can't be mistaken for each other.
+    const ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let token: String = (0..6).map(|_| ALPHABET[unsafe { esp_random() } as usize % ALPHABET.len()] as char).collect();
+    let address = status::lock(status).address.clone();
+    let ip = address.rsplit_once(':').map_or(address.as_str(), |(ip, _)| ip).to_string();
+    match crate::config_page::start_log_server(format!("{SD_MOUNT}/logs").into(), token.clone(), &[80, 8080], crate::config_page::LOG_SERVER_OPEN) {
+        Ok(80) => Some(format!("{ip}/{token}")),
+        Ok(port) => Some(format!("{ip}:{port}/{token}")),
+        Err(e) => {
+            warn!("Log download page: {e}");
+            None
         }
     }
 }
@@ -582,6 +654,11 @@ impl Button {
         let pressed = down && !self.was_down.get();
         self.was_down.set(down);
         pressed
+    }
+
+    /// Whether it was down at the last `pressed`.
+    fn down(&self) -> bool {
+        self.was_down.get()
     }
 }
 

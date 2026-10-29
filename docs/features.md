@@ -189,7 +189,7 @@ Not part of Minetest Game, which has none, so they are off unless an admin or mo
   - **Join** (hotspot only, first): a QR code that a phone camera offers to join, with the hotspot's name, password and address written beside it.
   - **Overview:** players online, packet and block counts, memory, and recent events.
   - **Device:** load on each CPU core, how busy the server is, time per map block, memory (free, lowest, largest piece), Wi-Fi signal and channel (on the hotspot: its channel and how many devices are on it), failed sends, SD card space (or flash space, without a card), and the chip's temperature.
-  - **Chat:** the latest public chat, newest at the bottom. The screen font covers Latin-1 and Latin Extended-A, so Finnish, Swedish and most European letters show properly.
+  - **Logs:** whether [the log](setup.md#the-log) is kept, and how to download it: hold BOOT here for three seconds and the page shows an address to open in a browser for ten minutes (see [Downloading the log](setup.md#downloading-the-log)). The screen stays on meanwhile.
 
 ## What doesn't (yet)
 

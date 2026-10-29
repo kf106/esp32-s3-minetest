@@ -148,11 +148,7 @@ impl Server {
             "me" if param.is_empty() => Some("-!- Invalid command usage: /me <action>".to_string()),
             "me" => {
                 self.tell_all(&format!("* {name} {param}"));
-                status::lock(&self.status).chat_line(status::ChatLine {
-                    name: name.to_string(),
-                    text: param.to_string(),
-                    action: true,
-                });
+                status::lock(&self.status).chat_line();
                 None
             }
             "mobs" => Some(self.cmd_mobs(name, param)),

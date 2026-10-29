@@ -258,6 +258,12 @@ fn prune(dir: &Path, keep: usize) {
     }
 }
 
+/// Whether `name` is one of the log's files: a day's (2026-10-28.log) or
+/// undated.log (or its old one). Nothing else is served (config_page.rs).
+pub fn is_log_name(name: &str) -> bool {
+    (name.len() == 14 && name.ends_with(".log") && day_of(name.as_bytes()).is_some()) || name == "undated.log" || name == "undated-old.log"
+}
+
 /// The date a line (or file name) starts with: "2026-10-28".
 fn day_of(line: &[u8]) -> Option<&str> {
     let d = line.get(..10)?;
@@ -358,6 +364,14 @@ mod tests {
         assert_eq!(day_of(b"2026-10-28 21:40:12 I server: x"), Some("2026-10-28"));
         assert_eq!(day_of(b"I (123) wifi: x"), None);
         assert_eq!(day_of(b"2026-10-28.log"), Some("2026-10-28"));
+    }
+
+    #[test]
+    fn names() {
+        assert!(is_log_name("2026-10-28.log") && is_log_name("undated.log") && is_log_name("undated-old.log"));
+        for bad in ["../server.txt", "2026-10-28.log/../x", "x.log", "2026-10-28.txt", "", "2026-1-28.log", "/etc/passwd"] {
+            assert!(!is_log_name(bad), "{bad}");
+        }
     }
 
     #[test]

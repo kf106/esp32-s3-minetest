@@ -85,16 +85,16 @@ pub enum Page {
     Join,
     Overview,
     Device,
-    Chat,
+    Logs,
 }
 
 impl Page {
     /// The pages in order, with or without the hotspot's Join page.
     fn all(hotspot: bool) -> &'static [Page] {
         if hotspot {
-            &[Page::Join, Page::Overview, Page::Device, Page::Chat]
+            &[Page::Join, Page::Overview, Page::Device, Page::Logs]
         } else {
-            &[Page::Overview, Page::Device, Page::Chat]
+            &[Page::Overview, Page::Device, Page::Logs]
         }
     }
 
@@ -237,7 +237,7 @@ pub fn render(f: &mut Frame, view: &View) {
         (Page::Join, Some(hotspot)) => render_join(f, view.status, hotspot),
         (Page::Overview | Page::Join, _) => render_overview(f, view.status, view.system),
         (Page::Device, _) => render_device(f, view.status, view.system),
-        (Page::Chat, _) => render_chat(f, view.status),
+        (Page::Logs, _) => render_logs(f, view.status),
     }
     // Which page this is, as dots along the bottom edge, kept clear of the
     // panel's rounded corner.
@@ -250,6 +250,12 @@ pub fn render(f: &mut Frame, view: &View) {
     }
     // BOOT held at start-up: a blue bar growing along the bottom edge
     // towards a hotspot, then an orange one over it towards the USB drive.
+    // BOOT held on the Logs page: a blue bar towards opening the log
+    // download page.
+    if let (Page::Logs, Some(held)) = (view.page, view.status.log_hold) {
+        let w = (held.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
+        f.fill(0, HEIGHT - HOLD_BAR, w, HOLD_BAR, HOLD_BLUE);
+    }
     if let Some(held) = view.status.boot_hold {
         let width = |part: f32| (part.clamp(0.0, 1.0) * WIDTH as f32).round() as usize;
         f.fill(0, HEIGHT - HOLD_BAR, width(held), HOLD_BAR, HOLD_BLUE);
@@ -370,95 +376,50 @@ fn render_device(f: &mut Frame, st: &Status, sys: &System) {
     }
 }
 
-/// Split `text` into lines of at most `width` characters, breaking at
-/// spaces where possible. The first line has `first` characters less room
-/// (for the speaker's name).
-fn wrap(text: &str, width: usize, first: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let room = |lines: &Vec<String>| if lines.is_empty() { width.saturating_sub(first).max(1) } else { width };
-    for word in text.split(' ') {
-        let mut word = word.to_string();
-        loop {
-            let used = line.chars().count();
-            let gap = if used == 0 { 0 } else { 1 };
-            let fits = room(&lines).saturating_sub(used + gap);
-            let len = word.chars().count();
-            if len <= fits {
-                if gap == 1 {
-                    line.push(' ');
-                }
-                line.push_str(&word);
-                break;
-            }
-            if used > 0 {
-                lines.push(std::mem::take(&mut line));
-                continue;
-            }
-            // A word longer than a whole line: cut it.
-            let cut: String = word.chars().take(fits.max(1)).collect();
-            word = word.chars().skip(fits.max(1)).collect();
-            lines.push(cut);
-        }
-    }
-    if !line.is_empty() || lines.is_empty() {
-        lines.push(line);
-    }
-    lines
-}
-
-/// The third page: recent public chat, newest at the bottom, wrapped to
-/// the screen's width. (The font has only plain ASCII characters; others
-/// show as "?".)
-fn render_chat(f: &mut Frame, st: &Status) {
+/// The third page: the log (filelog.rs), and its download page
+/// (config_page.rs, log_server), opened by holding BOOT here.
+fn render_logs(f: &mut Frame, st: &Status) {
     let margin = 6;
     let right = WIDTH - margin;
     f.fill(0, 0, WIDTH, HEIGHT, BACKGROUND);
     let header_h = BIG.h + 4;
     f.fill(0, 0, WIDTH, header_h, HEADER);
-    f.text(&Pen::new(&BIG, TEXT, HEADER, WIDTH), margin, 2, "Chat");
+    f.text(&Pen::new(&BIG, TEXT, HEADER, WIDTH), margin, 2, "Logs");
     let up = uptime(st.started.elapsed());
     f.text_right(&Pen::new(&SMALL, TEXT, HEADER, WIDTH), right, 2 + (BIG.h - SMALL.h) / 2 + 1, &up);
 
     let line = SMALL.h + 1;
-    let top = header_h + 4;
-    // Leave the bottom row's right end clear for the page dots.
-    let rows = (HEIGHT - 6 - top) / line;
-    let width = (right - margin) / SMALL.w;
-    if st.chat.is_empty() {
-        f.text(&Pen::new(&SMALL, LABEL, BACKGROUND, right), margin, top, "Nothing said yet.");
-        return;
-    }
-    // Lay out from the newest backwards until the screen is full.
-    // Each row: (name shown first?, text, colour).
-    let mut layout: Vec<(Option<String>, String, u16)> = Vec::new();
-    for c in st.chat.iter().rev() {
-        let (prefix, colour) = if c.action { (format!("* {} ", c.name), EVENT) } else { (format!("<{}> ", c.name), TEXT) };
-        let mut wrapped = wrap(&c.text, width, prefix.chars().count());
-        let first = wrapped.remove(0);
-        let mut rows_for: Vec<(Option<String>, String, u16)> = vec![(Some(prefix), first, colour)];
-        rows_for.extend(wrapped.into_iter().map(|t| (None, t, colour)));
-        // Only whole messages, unless even the newest alone doesn't fit
-        // (then its start).
-        if layout.len() + rows_for.len() > rows {
-            if layout.is_empty() {
-                rows_for.truncate(rows);
-                layout.extend(rows_for.into_iter().rev());
-            }
-            break;
+    let mut y = header_h + 6;
+    // A line of small text, and down to the next.
+    let say = |f: &mut Frame, y: &mut usize, colour: u16, text: &str| {
+        f.text(&Pen::new(&SMALL, colour, BACKGROUND, right), margin, *y, text);
+        *y += line;
+    };
+    match (&st.log_server, st.log_kept) {
+        (Some(server), _) => {
+            say(f, &mut y, LABEL, "Download the logs: in a browser");
+            say(f, &mut y, LABEL, "on this network, open");
+            // The address, large if it fits.
+            let font = if server.address.len() * BIG.w <= right - margin { &BIG } else { &SMALL };
+            f.text(&Pen::new(font, GOOD, BACKGROUND, right), margin, y + 2, &server.address);
+            y += font.h + 8;
+            let left = format!("Open for {}:{:02} more.", server.left_secs / 60, server.left_secs % 60);
+            say(f, &mut y, TEXT, &left);
+            say(f, &mut y, EVENT, "Press BOOT to close it now.");
         }
-        layout.extend(rows_for.into_iter().rev());
-    }
-    layout.reverse();
-    let mut y = top;
-    for (prefix, text, colour) in layout {
-        let mut x = margin;
-        if let Some(p) = prefix {
-            let name_colour = if colour == EVENT { EVENT } else { GOOD };
-            x = f.text(&Pen::new(&SMALL, name_colour, BACKGROUND, right), x, y, &p);
+        (None, true) => {
+            say(f, &mut y, TEXT, "The log is kept in files, one a");
+            say(f, &mut y, TEXT, "day, in logs/.");
+            y += 6;
+            say(f, &mut y, EVENT, "Hold BOOT for 3s to download the");
+            say(f, &mut y, EVENT, "logs from a browser.");
         }
-        f.text(&Pen::new(&SMALL, colour, BACKGROUND, right), x, y, &text);
-        y += line;
+        (None, false) => {
+            say(f, &mut y, LABEL, "No log is being kept.");
+            y += 6;
+            say(f, &mut y, TEXT, "Switch on Keep a log on the");
+            say(f, &mut y, TEXT, "settings page to keep one.");
+        }
     }
 }
 

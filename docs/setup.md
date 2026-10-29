@@ -92,7 +92,7 @@ On the hotspot, the board also serves a settings page: join the hotspot with a p
 - **Game rules:** fire, TNT, mobs and creative mode, as toggles (`world/settings.txt`, the same settings as `/fire`, `/tnt`, `/mobs` and `/mode` in the game).
 - **Welcome message:** `motd.txt`. Empty means the built-in welcome.
 - **Game port:** the UDP port players connect to (`server.txt`, see [below](#the-game-port)).
-- **Log:** keep the log in files on the card (`server.txt`, see [below](#the-log)).
+- **Log:** keep the log in files on the card (`server.txt`, see [below](#the-log)); download them from the board's Logs page (see [below](#downloading-the-log)).
 - **Public server list:** a name, a description and, optionally, a website, a domain name and the port players use from outside (`server.txt`, see [below](#the-public-server-list)). The switch to announce the server stays greyed out until the details are complete and would pass the list's own checks.
 - **Require passwords:** new players must choose a password (Luanti's `disallow_empty_password`, kept in `world/settings.txt`). Without it, an account made with an empty password can be used by anyone who types that name. Switching announcing on turns it on as well, and you can turn it off again. Accounts already made with an empty password keep working; the administrator can give them one with `/setpassword <name> <password>`.
 - **Wi-Fi networks:** add, remove, rename and reorder them (`wifi.txt`). Saved passwords are never shown: a password left empty keeps the one saved, and a new network with no password is an open one.
@@ -135,6 +135,17 @@ It takes effect when the board restarts. Things to know:
 - **Each start-up** begins with a line such as `--- Minetest on a Stick 0.1.0 on the Waveshare ESP32-S3-LCD-1.47 started ---`.
 - **Writing:** lines are gathered and written every 10 seconds or so, so the last few seconds before a power cut can be missing. Restarting from the settings page writes them first. If more is logged than can be written in time, the log says how many lines were dropped.
 - **The cost:** a few KB of memory, and a small write every few seconds. That's nothing for a card. In flash, wear levelling spreads the writes, but if the board has no card and you don't need the log, leave it off.
+
+### Downloading the log
+
+The log files can be downloaded while the game keeps running:
+
+1. Press BOOT until the screen shows the **Logs** page (the last one).
+2. Hold BOOT for three seconds. A blue bar fills along the bottom; when it's full, the page shows an address such as **192.168.68.136/K7Q3XZ**.
+3. Open that address in a browser on the same network (on the hotspot: on a phone or laptop that has joined it). It lists the log files, newest day first, each with a **Download** button.
+4. The page closes by itself after ten minutes, or at once when you press BOOT. The screen stays on while it's open, so you can see the address.
+
+The last part of the address is new each time and only appears on the board's screen, so it takes someone at the board to open the page, and an old address doesn't work again. While it is open, the page serves the log files and nothing else; it has no settings and can't change anything. It is plain HTTP, so anyone watching your network's traffic during those minutes could read what you download. On the hotspot, the settings page already uses the usual port, so the address has `:8080` in it.
 
 ## The public server list
 

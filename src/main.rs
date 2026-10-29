@@ -74,7 +74,7 @@ use esp_idf_svc::hal::sd::{SdCardConfiguration, SdCardDriver};
 use esp_idf_svc::io::vfs::MountedFatfs;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{AccessPointConfiguration, BlockingWifi, ClientConfiguration, Configuration, EspWifi, WifiDriver};
-use log::{info, Log as _};
+use log::info;
 
 const MOUNT: &str = "/sd";
 /// Wi-Fi networks, editable on a PC (see wifi_config.rs).
@@ -327,12 +327,14 @@ fn main() -> anyhow::Result<()> {
     let _sd = sd;
     // The log in files too, if server.txt says so (not as a USB drive: the
     // PC has the files then).
-    if announce::read(&server_txt).log_to_file {
+    let keep_log = announce::read(&server_txt).log_to_file;
+    if keep_log {
         filelog::start(format!("{MOUNT}/logs").into(), &format!("Minetest on a Stick {} on the {}", env!("CARGO_PKG_VERSION"), board::BOARD.name));
         info!("Keeping the log in {MOUNT}/logs");
     } else {
         filelog::stop();
     }
+    status::lock(&status).log_kept = keep_log;
     let ip = if boot == Boot::Hotspot {
         let driver = WifiDriver::new(p.modem, sysloop.clone(), Some(nvs))?;
         let wifi = start_hotspot(driver, sysloop, &config.hotspot, &status, port)?;
